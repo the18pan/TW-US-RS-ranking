@@ -67,6 +67,7 @@ jobs:
           # 只有資料有變動才 commit
           git diff --staged --quiet || \
             git commit -m "🤖 RS 排行更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+          git pull --rebase origin master
           git push
 
       # ── 6. 上傳 Pages Artifact ────────────────────────────────
