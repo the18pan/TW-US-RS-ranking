@@ -41,6 +41,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ── 3.5. 還原收盤價快取 ──────────────────────────────────
+      - name: Restore price cache
+        uses: actions/cache@v4
+        with:
+          path: price_cache.pkl
+          key: price-cache-${{ runner.os }}-${{ github.run_number }}
+          restore-keys: |
+            price-cache-${{ runner.os }}-
+
       # ── 4. 執行 RS 計算 ───────────────────────────────────────
       - name: Run RS calculator
         run: |

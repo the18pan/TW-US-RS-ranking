@@ -13,8 +13,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import requests
-import json, time, sys, warnings, argparse
-from datetime import datetime, timezone, timedelta
+import json, time, sys, warnings, argparse, pickle, threading
+from datetime import datetime, timezone, timedelta, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from io import StringIO
@@ -28,6 +28,30 @@ MIN_DAYS    = 252       # 最少交易日（約 1 年）
 SLEEP       = 0.15      # 每次下載後等待秒數（降低 rate-limit 風險）
 OUTPUT_DIR  = "docs"    # GitHub Pages 預設目錄
 OUTPUT_FILE = f"{OUTPUT_DIR}/rs_data.json"
+CACHE_FILE  = "price_cache.pkl"   # 收盤價快取（不入 git）
+
+# ── 收盤價快取 ────────────────────────────────────────────────
+_price_cache: dict = {}   # { ticker: pd.Series }
+_cache_lock = threading.Lock()
+
+def load_price_cache():
+    global _price_cache
+    if not __import__("os").path.exists(CACHE_FILE):
+        return
+    try:
+        with open(CACHE_FILE, "rb") as f:
+            _price_cache = pickle.load(f)
+        print(f"  ✓ 快取載入：{len(_price_cache)} 支股票")
+    except Exception as e:
+        print(f"  ⚠ 快取讀取失敗，將重新下載：{e}")
+        _price_cache = {}
+
+def save_price_cache():
+    try:
+        with open(CACHE_FILE, "wb") as f:
+            pickle.dump(_price_cache, f)
+    except Exception as e:
+        print(f"  ⚠ 快取儲存失敗：{e}")
 
 # 產業分類對應（證交所中文產業名稱 → 自訂板塊）
 SECTOR_MAP = {
@@ -124,22 +148,53 @@ def fetch_twse_listed() -> list[dict]:
 # ════════════════════════════════════════════════════════════════
 #  Step 2：下載收盤價
 # ════════════════════════════════════════════════════════════════
+def _fetch_yf(ticker: str, period: str, timeout: int = 20) -> pd.Series | None:
+    """直接從 yfinance 下載，回傳 Close Series 或 None。"""
+    try:
+        df = yf.download(ticker, period=period, auto_adjust=True,
+                         progress=False, timeout=timeout)
+        if df.empty:
+            return None
+        close = df["Close"]
+        if isinstance(close, pd.DataFrame):
+            close = close.squeeze()
+        return close.dropna()
+    except Exception:
+        return None
+
 def download_close(ticker: str, period: str = "580d") -> pd.Series | None:
+    today = date.today()
+
+    # ── 1. 快取命中：嘗試增量更新（只補最近幾天）────────────────
+    with _cache_lock:
+        cached = _price_cache.get(ticker)
+
+    if cached is not None:
+        last_date = cached.index[-1].date()
+        if last_date >= today:
+            return cached if len(cached) >= MIN_DAYS else None
+
+        # 快取有舊資料 → 只補最近 5 天
+        new_data = _fetch_yf(ticker, period="5d", timeout=10)
+        if new_data is not None and not new_data.empty:
+            merged = pd.concat([cached, new_data])
+            merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+            with _cache_lock:
+                _price_cache[ticker] = merged
+            return merged if len(merged) >= MIN_DAYS else None
+
+        # 增量失敗 → 直接用舊快取（今天沒收盤也無妨）
+        return cached if len(cached) >= MIN_DAYS else None
+
+    # ── 2. 快取不命中：完整下載 ──────────────────────────────────
     for attempt in range(2):
-        try:
-            df = yf.download(ticker, period=period, auto_adjust=True,
-                             progress=False, timeout=20)
-            if df.empty:
-                continue
-            close = df["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.squeeze()
-            close = close.dropna()
-            if len(close) >= MIN_DAYS:
-                return close
-        except Exception:
-            if attempt == 0:
-                time.sleep(1)
+        close = _fetch_yf(ticker, period=period)
+        if close is not None and len(close) >= MIN_DAYS:
+            with _cache_lock:
+                _price_cache[ticker] = close
+            return close
+        if attempt == 0:
+            time.sleep(1)
     return None
 
 
@@ -317,6 +372,10 @@ def main():
     print(f"  {now.strftime('%Y-%m-%d %H:%M')} (台灣時間)")
     print("=" * 62)
 
+    # ── 快取載入 ─────────────────────────────────────────────
+    print(f"\n▶ [0/4] 載入收盤價快取...")
+    load_price_cache()
+
     # ── 基準指數 ─────────────────────────────────────────────
     print(f"\n▶ [1/4] 下載基準指數 {BENCHMARK}...")
     bench = download_close(BENCHMARK)
@@ -363,6 +422,10 @@ def main():
 
     elapsed_total = time.time() - start_time
     print(f"\n\n  ✓ 完成，耗時 {int(elapsed_total//60)}分{int(elapsed_total%60)}秒")
+
+    # ── 儲存快取 ─────────────────────────────────────────────
+    save_price_cache()
+    print(f"  ✓ 快取已儲存：{len(_price_cache)} 支股票")
 
     if not raw_results:
         print("  ❌ 沒有任何成功結果，中止")
