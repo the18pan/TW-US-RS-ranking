@@ -1,0 +1,64 @@
+name: 每日 RS 排行自動更新
+
+on:
+  # 台股收盤後自動執行（UTC 08:35 = 台灣 16:35）
+  schedule:
+    - cron: "35 8 * * 1-5"   # 週一至週五
+
+  # 手動觸發（方便測試）
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: "並行執行緒數（預設 12）"
+        default: "12"
+        required: false
+
+jobs:
+  calculate-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 允許 commit rs_data.json 回 repo
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ── 2. 設定 Python ───────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # ── 3. 安裝套件 ──────────────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 4. 執行 RS 計算 ───────────────────────────────────────
+      - name: Run RS calculator
+        run: |
+          WORKERS=${{ github.event.inputs.workers || '12' }}
+          python rs_calculator.py --workers $WORKERS
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      # ── 5. Commit & Push rs_data.json ─────────────────────────
+      - name: Commit updated data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/rs_data.json
+          # 只有資料有變動才 commit
+          git diff --staged --quiet || \
+            git commit -m "🤖 RS 排行更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+          git push
+
+      # ── 6. Deploy GitHub Pages ────────────────────────────────
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          # 保留舊版 rs_data.json（萬一新版計算失敗）
+          keep_files: true
