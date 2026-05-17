@@ -91,9 +91,9 @@ def fetch_twse_listed() -> list[dict]:
     for _, row in df.iterrows():
         cell = str(row.iloc[0]).strip()
 
-        # 偵測產業標頭列（無數字開頭）
-        if pd.isna(row.iloc[1]) or str(row.iloc[1]).strip() in ("", "nan"):
-            # 這是產業分類列
+        # 股票列格式：「XXXX　公司名稱」（含全形空白）
+        # 產業標頭列：純文字，不含全形空白
+        if "\u3000" not in cell:
             for key, val in SECTOR_MAP.items():
                 if key in cell:
                     current_sector = val
