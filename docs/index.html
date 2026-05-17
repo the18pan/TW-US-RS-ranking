@@ -64,6 +64,7 @@ nav { display: flex; align-items: center; gap: 24px; padding: 0 24px; height: 52
 .pill.active { background: rgba(6,182,212,.15); border-color: var(--accent); color: var(--accent); }
 .ctrl-select { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 4px 10px; border-radius: var(--radius); font-size: 12px; font-family: var(--font-ui); cursor: pointer; outline: none; }
 .ctrl-select:focus { border-color: var(--accent); }
+#search-input:focus { border-color: var(--accent); }
 .ctrl-sep { width: 1px; height: 20px; background: var(--border); }
 .result-count { font-family: var(--font-num); font-size: 12px; color: var(--text3); margin-left: auto; }
 
@@ -234,8 +235,13 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
       <button class="pill" data-rs="70">≥70</button>
     </div>
   </div>
+  <div class="ctrl-sep"></div>
+  <div class="ctrl-group">
+    <span class="ctrl-label">搜尋：</span>
+    <input type="text" id="search-input" placeholder="代號 / 名稱…" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:var(--radius);font-size:12px;font-family:var(--font-ui);outline:none;width:130px;" oninput="onSearch()">
+  </div>
   <div class="result-count" id="result-count"></div>
-  <button class="pill" id="tv-export-btn" onclick="exportTV()" style="margin-left:8px">📋 匯出 RS≥90 至 TV</button>
+  <button class="pill" id="tv-export-btn" onclick="exportTV()" style="margin-left:8px">📥 下載 RS≥90 清單</button>
 </div>
 
 <!-- TAB: ALL RS -->
@@ -325,7 +331,7 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
 
 <footer>
   <span>資料來源：模擬示意 · Minervini RS 方法論</span>
-  <span>RS Score = Q1×40% + Q2×20% + Q3×20% + Q4×20% | 本頁面僅供學習參考，非投資建議</span>
+  <span>RS Score = Q1×50% + Q2×25% + Q3×15% + Q4×10% | 本頁面僅供學習參考，非投資建議</span>
 </footer>
 
 <script>
@@ -464,7 +470,7 @@ function makeSvgSparkline(data, w, h) {
 
 // ── STATE ─────────────────────────────────────────────────────
 let sortCol = 'rs', sortDir = -1;
-let filterCap = 'all', filterSector = 'all', filterRS = 0;
+let filterCap = 'all', filterSector = 'all', filterRS = 0, searchQuery = '';
 let page = 1;
 const PER_PAGE = 20;
 
@@ -517,15 +523,17 @@ async function init() {
 }
 
 function getFiltered() {
+  const q = searchQuery.toLowerCase();
   return stocks.filter(s => {
     if (filterCap !== 'all' && s.cap !== filterCap) return false;
     if (filterSector !== 'all' && s.sector !== filterSector) return false;
     if (s.rs < filterRS) return false;
+    if (q && !s.code.toLowerCase().includes(q) && !s.name.toLowerCase().includes(q)) return false;
     return true;
   }).sort((a, b) => {
     const av = a[sortCol], bv = b[sortCol];
     if (typeof av === 'boolean') return (bv - av) * sortDir * -1;
-    return (bv - av) * sortDir;
+    return (av - bv) * sortDir;
   });
 }
 
@@ -766,21 +774,24 @@ function bindEvents() {
 }
 
 function exportTV() {
-  const rs90 = stocks.filter(s => s.rs >= 90);
+  const rs90 = stocks.filter(s => s.rs >= 90).sort((a, b) => b.rs - a.rs);
   if (!rs90.length) { alert('目前沒有 RS≥90 的股票'); return; }
   const symbols = rs90.map(s => `TWSE:${s.code}`).join(',');
-  navigator.clipboard.writeText(symbols).then(() => {
-    const btn = document.getElementById('tv-export-btn');
-    const orig = btn.textContent;
-    btn.textContent = '✓ 已複製！';
-    btn.style.borderColor = 'var(--pos)';
-    btn.style.color = 'var(--pos)';
-    setTimeout(() => {
-      btn.textContent = orig;
-      btn.style.borderColor = '';
-      btn.style.color = '';
-    }, 2000);
-  });
+  const date = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([symbols], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `rs90_watchlist_${date}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function onSearch() {
+  searchQuery = document.getElementById('search-input').value;
+  page = 1; renderTable();
 }
 
 init();
