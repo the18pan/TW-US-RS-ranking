@@ -235,6 +235,7 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
     </div>
   </div>
   <div class="result-count" id="result-count"></div>
+  <button class="pill" id="tv-export-btn" onclick="exportTV()" style="margin-left:8px">📋 匯出 RS≥90 至 TV</button>
 </div>
 
 <!-- TAB: ALL RS -->
@@ -444,7 +445,7 @@ function capBadge(cap) {
   return `<span class="cap-badge cap-${cap}">${cap}</span>`;
 }
 function tvLink(code) {
-  return `https://www.tradingview.com/chart/?symbol=TWSE:${code}`;
+  return `https://www.tradingview.com/chart/?symbol=TWSE:${code}&interval=D`;
 }
 function makeSvgSparkline(data, w, h) {
   const min = Math.min(...data), max = Math.max(...data);
@@ -761,6 +762,24 @@ function bindEvents() {
       if (icon) icon.textContent = sortDir === -1 ? '↓' : '↑';
       page = 1; renderTable();
     });
+  });
+}
+
+function exportTV() {
+  const rs90 = stocks.filter(s => s.rs >= 90);
+  if (!rs90.length) { alert('目前沒有 RS≥90 的股票'); return; }
+  const symbols = rs90.map(s => `TWSE:${s.code}`).join(',');
+  navigator.clipboard.writeText(symbols).then(() => {
+    const btn = document.getElementById('tv-export-btn');
+    const orig = btn.textContent;
+    btn.textContent = '✓ 已複製！';
+    btn.style.borderColor = 'var(--pos)';
+    btn.style.color = 'var(--pos)';
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.style.borderColor = '';
+      btn.style.color = '';
+    }, 2000);
   });
 }
 
