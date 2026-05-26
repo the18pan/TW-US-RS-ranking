@@ -63,11 +63,14 @@ jobs:
         id: check_date
         run: |
           TODAY=$(TZ=Asia/Taipei date '+%Y-%m-%d')
+          NOW_HOUR=$(TZ=Asia/Taipei date '+%H')
           LAST=$(python3 -c "import json; print(json.load(open('docs/rs_data.json')).get('updated_at','')[:10])" 2>/dev/null || echo "none")
-          echo "today=$TODAY  last=$LAST  event=${{ github.event_name }}"
-          if [ "$LAST" = "$TODAY" ] && [ "${{ github.event_name }}" = "push" ]; then
+          LAST_HOUR=$(python3 -c "import json; t=json.load(open('docs/rs_data.json')).get('updated_at','00:00'); print(t[11:13])" 2>/dev/null || echo "0")
+          echo "today=$TODAY  last=$LAST  last_hour=$LAST_HOUR  now_hour=$NOW_HOUR  event=${{ github.event_name }}"
+          # push 觸發：當天已有收盤後資料（14:00 以後）才跳過
+          if [ "$LAST" = "$TODAY" ] && [ "$LAST_HOUR" -ge "14" ] && [ "${{ github.event_name }}" = "push" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
-            echo "今日資料已存在，跳過計算"
+            echo "今日收盤後資料已存在，跳過計算"
           else
             echo "skip=false" >> $GITHUB_OUTPUT
           fi
