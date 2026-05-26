@@ -71,7 +71,9 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git stash
           git pull --rebase origin master
+          git stash pop
           git add docs/rs_data.json
           # 只有資料有變動才 commit
           git diff --staged --quiet || \
