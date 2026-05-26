@@ -58,8 +58,23 @@ jobs:
           restore-keys: |
             price-cache-${{ runner.os }}-
 
+      # ── 3.7. 檢查今日資料是否已存在（push 觸發才檢查）────────
+      - name: Check if today's data exists
+        id: check_date
+        run: |
+          TODAY=$(TZ=Asia/Taipei date '+%Y-%m-%d')
+          LAST=$(python3 -c "import json; print(json.load(open('docs/rs_data.json')).get('updated_at','')[:10])" 2>/dev/null || echo "none")
+          echo "today=$TODAY  last=$LAST  event=${{ github.event_name }}"
+          if [ "$LAST" = "$TODAY" ] && [ "${{ github.event_name }}" = "push" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "今日資料已存在，跳過計算"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       # ── 4. 執行 RS 計算 ───────────────────────────────────────
       - name: Run RS calculator
+        if: steps.check_date.outputs.skip != 'true'
         run: |
           WORKERS=${{ github.event.inputs.workers || '12' }}
           python rs_calculator.py --workers $WORKERS
@@ -68,6 +83,7 @@ jobs:
 
       # ── 5. Commit & Push rs_data.json ─────────────────────────
       - name: Commit updated data
+        if: steps.check_date.outputs.skip != 'true'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
