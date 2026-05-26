@@ -159,20 +159,6 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
 
-/* ── SPOTLIGHT PANEL ── */
-.spotlight-panel { display:flex; gap:16px; padding:16px 24px; background:linear-gradient(135deg,#78350f 0%,#92400e 40%,#7c2d12 100%); border-top:2px solid #d97706; border-bottom:1px solid #92400e; }
-.spotlight-half { flex:1; background:rgba(0,0,0,0.25); border-radius:10px; padding:14px 16px; border:1px solid rgba(245,158,11,0.25); }
-.spotlight-title { font-size:12px; font-weight:600; color:#fbbf24; letter-spacing:.8px; text-transform:uppercase; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
-.sp-row { display:flex; align-items:center; gap:8px; padding:5px 2px; border-bottom:1px solid rgba(255,255,255,0.06); font-size:12px; }
-.sp-row:last-child { border-bottom:none; }
-.sp-rank { font-family:var(--font-num); color:#d97706; width:18px; text-align:right; font-size:11px; flex-shrink:0; }
-.sp-code { font-family:var(--font-num); font-weight:600; color:#fde68a; width:46px; flex-shrink:0; }
-.sp-name { color:#fef3c7; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.sp-rs { font-family:var(--font-num); font-weight:700; font-size:13px; width:28px; text-align:right; flex-shrink:0; }
-.sp-c1 { font-family:var(--font-num); font-size:11px; width:52px; text-align:right; flex-shrink:0; }
-.sp-c1.pos { color:#6ee7b7; } .sp-c1.neg { color:#fca5a5; } .sp-c1.neu { color:#94a3b8; }
-.sp-avg { font-family:var(--font-num); font-size:11px; color:#fcd34d; width:46px; text-align:right; flex-shrink:0; }
-.sp-badge { font-size:10px; background:rgba(245,158,11,0.2); border:1px solid rgba(245,158,11,0.3); color:#fcd34d; padding:1px 6px; border-radius:3px; white-space:nowrap; flex-shrink:0; }
 </style>
 </head>
 <body>
@@ -213,17 +199,6 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
       <div class="scard-val" style="font-size:14px;font-weight:600" id="top-sector">—</div>
       <div class="scard-sub">依平均 RS Score 排序</div>
     </div>
-  </div>
-</div>
-
-<div class="spotlight-panel">
-  <div class="spotlight-half">
-    <div class="spotlight-title">🏆 RS 前 10 名</div>
-    <div id="spotlight-top10"></div>
-  </div>
-  <div class="spotlight-half">
-    <div class="spotlight-title">🔥 最熱板塊</div>
-    <div id="spotlight-sectors"></div>
   </div>
 </div>
 
@@ -546,7 +521,7 @@ async function init() {
   });
   document.getElementById('top-sector').textContent = topSector;
 
-  renderSpotlight(); renderTable(); renderSEPA(); renderFund(); renderSectorFlow();
+  renderTable(); renderSEPA(); renderFund(); renderSectorFlow();
   bindEvents();
 }
 
@@ -746,48 +721,6 @@ function renderSectorFlow() {
       spark.classList.toggle('open');
     });
   });
-}
-
-function renderSpotlight() {
-  // Top 10 by RS
-  const top10 = [...stocks].sort((a,b) => b.rs - a.rs).slice(0, 10);
-  document.getElementById('spotlight-top10').innerHTML = top10.map((s, i) => {
-    const cls = s.c1 > 0 ? 'pos' : s.c1 < 0 ? 'neg' : 'neu';
-    const c1str = (s.c1 > 0 ? '+' : '') + s.c1.toFixed(1) + '%';
-    return `<div class="sp-row">
-      <span class="sp-rank">${i+1}</span>
-      <span class="sp-code">${s.code}</span>
-      <span class="sp-name">${s.name}</span>
-      <span class="sp-c1 ${cls}">${c1str}</span>
-      <span class="sp-rs" style="color:${rsColor(s.rs)}">${s.rs}</span>
-    </div>`;
-  }).join('');
-
-  // Hot sectors computed from stocks
-  const sm = {};
-  stocks.forEach(s => {
-    if (!sm[s.sector]) sm[s.sector] = { rs:[], c1:[] };
-    sm[s.sector].rs.push(s.rs);
-    sm[s.sector].c1.push(s.c1 || 0);
-  });
-  const hotSectors = Object.entries(sm).map(([name, d]) => ({
-    name,
-    avg_rs: d.rs.reduce((a,b)=>a+b,0)/d.rs.length,
-    avg_c1: d.c1.reduce((a,b)=>a+b,0)/d.c1.length,
-    rs90: d.rs.filter(r=>r>=90).length,
-  })).sort((a,b) => b.avg_rs - a.avg_rs).slice(0, 10);
-
-  document.getElementById('spotlight-sectors').innerHTML = hotSectors.map((s, i) => {
-    const cls = s.avg_c1 > 0 ? 'pos' : s.avg_c1 < 0 ? 'neg' : 'neu';
-    const c1str = (s.avg_c1 > 0 ? '+' : '') + s.avg_c1.toFixed(1) + '%';
-    return `<div class="sp-row">
-      <span class="sp-rank">${i+1}</span>
-      <span class="sp-name">${s.name}</span>
-      <span class="sp-c1 ${cls}">${c1str}</span>
-      <span class="sp-avg">均RS ${s.avg_rs.toFixed(0)}</span>
-      <span class="sp-badge">RS90: ${s.rs90}</span>
-    </div>`;
-  }).join('');
 }
 
 // ── EVENTS ────────────────────────────────────────────────────
