@@ -238,14 +238,14 @@ function renderTable() {
   const rankMap = new Map(allByRS.map((s, i) => [s.code, i + 1]));
   const prevRankMap = computePrevRankMap();
   const showDelta = prevRankMap.size > 0;
-  document.querySelectorAll('.col-delta').forEach(el => { el.style.display = showDelta ? '' : 'none'; });
+  document.querySelector('th.col-delta').style.display = showDelta ? '' : 'none';
 
   const tbody = document.getElementById('rs-tbody');
   tbody.innerHTML = slice.map((s) => {
     const rank = rankMap.get(s.code);
     return `<tr class="tr-clickable" onclick="showHistory('${s.code}','${s.name}')">
       <td class="td-rank">${rank}</td>
-      <td class="col-delta td-rank" style="width:40px;text-align:center">${rankDelta(rank, prevRankMap.get(s.code))}</td>
+      ${showDelta ? `<td class="td-rank" style="width:40px;text-align:center">${rankDelta(rank, prevRankMap.get(s.code))}</td>` : ''}
       <td class="td-code"><a href="${tvLink(s.code)}" target="_blank" onclick="event.stopPropagation()">${s.code}</a></td>
       <td class="td-name">${s.name}${s.sepa?` <span class="sepa-badge">SEPA</span>`:''}</td>
       <td class="td-num rs-cell">
