@@ -597,10 +597,9 @@ def main():
     print(f"\n▶ [4/4] 換算百分位、判定 SEPA...")
     final   = finalize_results(raw_results)
     sectors = build_sectors(final)
+    need_backfill = args.backfill or not os.path.exists(HISTORY_FILE)
     write_output(final, sectors, now, args.output)
     save_history(final, now)
-
-    need_backfill = args.backfill or not os.path.exists(HISTORY_FILE)
     if need_backfill:
         backfill_history(bench, stocks, args.backfill_days)
 
