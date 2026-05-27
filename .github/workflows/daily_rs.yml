@@ -98,7 +98,11 @@ jobs:
           # 只有資料有變動才 commit
           git diff --staged --quiet || \
             git commit -m "🤖 RS 排行更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
-          git push
+          for i in 1 2 3; do
+            git push && break
+            echo "push 失敗，第 $i 次重試..."
+            sleep 10
+          done
 
       # ── 6. 上傳 Pages Artifact ────────────────────────────────
       - name: Upload Pages artifact
