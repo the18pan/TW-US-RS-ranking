@@ -159,6 +159,19 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
 
+/* ── HISTORY MODAL ── */
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; align-items:center; justify-content:center; }
+.modal-overlay.open { display:flex; }
+.modal-box { background:var(--bg2); border:1px solid var(--border2); border-radius:var(--radius-lg); padding:24px; width:min(640px,92vw); position:relative; }
+.modal-title { font-size:15px; font-weight:600; margin-bottom:4px; }
+.modal-sub { font-size:11px; color:var(--text3); margin-bottom:16px; }
+.modal-close { position:absolute; top:14px; right:16px; background:none; border:none; color:var(--text2); font-size:18px; cursor:pointer; line-height:1; }
+.modal-close:hover { color:var(--text); }
+#history-chart { width:100%; height:220px; }
+.modal-no-data { text-align:center; color:var(--text3); padding:40px 0; font-size:13px; }
+.tr-clickable { cursor:pointer; }
+.tr-clickable:hover td { background:var(--bg3) !important; }
+
 </style>
 </head>
 <body>
@@ -246,7 +259,13 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
     <input type="text" id="search-input" placeholder="代號 / 名稱…" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:var(--radius);font-size:12px;font-family:var(--font-ui);outline:none;width:130px;" oninput="onSearch()">
   </div>
   <div class="result-count" id="result-count"></div>
-  <button class="pill" id="tv-export-btn" onclick="exportTV()" style="margin-left:8px">📥 下載 RS≥90 清單</button>
+  <div style="display:flex;align-items:center;gap:6px;margin-left:8px">
+    <span style="font-size:12px;color:var(--text2)">RS ≥</span>
+    <input id="rs-threshold" type="number" min="1" max="99" value="90"
+      style="width:46px;background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-radius:var(--radius);padding:4px 6px;font-size:12px;font-family:var(--font-num);text-align:center;"
+      oninput="updateExportBtn()">
+    <button class="pill" id="tv-export-btn" onclick="exportTV()">📥 下載清單</button>
+  </div>
 </div>
 
 <!-- TAB: ALL RS -->
@@ -341,12 +360,25 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
   <span>RS Score = Q1×50% + Q2×25% + Q3×15% + Q4×10% | 本頁面僅供學習參考，非投資建議</span>
 </footer>
 
+<!-- RS 歷史走勢 Modal -->
+<div class="modal-overlay" id="history-modal" onclick="closeHistoryModal(event)">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeHistoryModal()">✕</button>
+    <div class="modal-title" id="modal-title"></div>
+    <div class="modal-sub" id="modal-sub"></div>
+    <canvas id="history-chart"></canvas>
+    <div class="modal-no-data" id="modal-no-data" style="display:none">尚無歷史資料（明日計算後開始累積）</div>
+  </div>
+</div>
+
 <script>
 // ── DATA ──────────────────────────────────────────────────────
 // 優先讀取 rs_data.json（由 rs_calculator.py 產生）
 // 找不到時自動降級為示意資料
 let stocks = [];
 let sectorFlowData = [];
+let rsHistory = {};
+let historyChart = null;
 
 const SEPA_LABELS = {
   rs70:         'RS≥70',
@@ -368,6 +400,10 @@ async function fetchData() {
       flow: s.flow ?? (s.avg_rs * 1.1), flow5: s.flow5 ?? 0,
       weeks: s.weeks || [],
     }));
+    fetch('rs_history.json?t=' + Date.now())
+      .then(r => r.ok ? r.json() : {})
+      .then(h => { rsHistory = h; })
+      .catch(() => {});
     return { updatedAt: data.updated_at, live: true };
   } catch (e) {
     console.warn('rs_data.json 未找到，使用示意資料。請執行 rs_calculator.py', e.message);
@@ -559,9 +595,9 @@ function renderTable() {
   const tbody = document.getElementById('rs-tbody');
   tbody.innerHTML = slice.map((s) => {
     const rank = rankMap.get(s.code);
-    return `<tr>
+    return `<tr class="tr-clickable" onclick="showHistory('${s.code}','${s.name}')">
       <td class="td-rank">${rank}</td>
-      <td class="td-code"><a href="${tvLink(s.code)}" target="_blank">${s.code}</a></td>
+      <td class="td-code"><a href="${tvLink(s.code)}" target="_blank" onclick="event.stopPropagation()">${s.code}</a></td>
       <td class="td-name">${s.name}${s.sepa?` <span class="sepa-badge">SEPA</span>`:''}</td>
       <td class="td-num rs-cell">
         <div class="rs-wrap">
@@ -799,9 +835,15 @@ const SECTOR_EMOJI = {
   '其他':       '📦',
 };
 
+function updateExportBtn() {
+  const t = parseInt(document.getElementById('rs-threshold').value) || 90;
+  document.getElementById('tv-export-btn').textContent = `📥 下載 RS≥${t} 清單`;
+}
+
 function exportTV() {
-  const rs90 = stocks.filter(s => s.rs >= 90).sort((a, b) => b.rs - a.rs);
-  if (!rs90.length) { alert('目前沒有 RS≥90 的股票'); return; }
+  const threshold = parseInt(document.getElementById('rs-threshold').value) || 90;
+  const rs90 = stocks.filter(s => s.rs >= threshold).sort((a, b) => b.rs - a.rs);
+  if (!rs90.length) { alert(`目前沒有 RS≥${threshold} 的股票`); return; }
   const today = new Date().toISOString().slice(0, 10);
 
   // 依 TWSE 官方板塊分組，板塊內依 RS 高到低
@@ -827,12 +869,67 @@ function exportTV() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `rs90_watchlist_${today}.txt`;
+  a.download = `rs${threshold}_watchlist_${today}.txt`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+function showHistory(code, name) {
+  const entries = rsHistory[code] || [];
+  document.getElementById('modal-title').textContent = `${code} ${name} — RS 歷史走勢`;
+  document.getElementById('modal-sub').textContent = entries.length
+    ? `近 ${entries.length} 個交易日`
+    : '';
+  const noData = document.getElementById('modal-no-data');
+  const canvas = document.getElementById('history-chart');
+
+  if (!entries.length) {
+    canvas.style.display = 'none';
+    noData.style.display = 'block';
+  } else {
+    canvas.style.display = 'block';
+    noData.style.display = 'none';
+    const labels = entries.map(e => e.date.slice(5));
+    const values = entries.map(e => e.rs);
+    if (historyChart) historyChart.destroy();
+    historyChart = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          borderColor: '#06b6d4',
+          backgroundColor: 'rgba(6,182,212,.08)',
+          borderWidth: 2,
+          pointRadius: entries.length > 60 ? 0 : 3,
+          pointBackgroundColor: '#06b6d4',
+          fill: true,
+          tension: 0.3,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: {
+          callbacks: { label: ctx => ` RS ${ctx.parsed.y}` }
+        }},
+        scales: {
+          x: { ticks: { color: '#4a5d7a', maxTicksLimit: 10 }, grid: { color: '#1f2d45' } },
+          y: { min: 0, max: 99, ticks: { color: '#4a5d7a' }, grid: { color: '#1f2d45' } }
+        }
+      }
+    });
+  }
+  document.getElementById('history-modal').classList.add('open');
+}
+
+function closeHistoryModal(e) {
+  if (e && e.target !== document.getElementById('history-modal')) return;
+  document.getElementById('history-modal').classList.remove('open');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHistoryModal(); });
 
 function onSearch() {
   searchQuery = document.getElementById('search-input').value;
@@ -842,6 +939,7 @@ function onSearch() {
 init();
 </script>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script data-goatcounter="https://martin.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
 <script>
 (function fetchVisitors() {

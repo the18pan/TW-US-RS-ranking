@@ -27,8 +27,11 @@ WORKERS     = 12        # 並行執行緒
 MIN_DAYS    = 252       # 最少交易日（約 1 年）
 SLEEP       = 0.15      # 每次下載後等待秒數（降低 rate-limit 風險）
 OUTPUT_DIR  = "docs"    # GitHub Pages 預設目錄
-OUTPUT_FILE = f"{OUTPUT_DIR}/rs_data.json"
-CACHE_FILE  = "price_cache.pkl"   # 收盤價快取（不入 git）
+OUTPUT_FILE   = f"{OUTPUT_DIR}/rs_data.json"
+HISTORY_FILE  = f"{OUTPUT_DIR}/rs_history.json"
+CACHE_FILE    = "price_cache.pkl"   # 收盤價快取（不入 git）
+HISTORY_DAYS  = 180   # 保留最近幾天
+HISTORY_MIN_RS = 50   # 只記錄 RS >= 50 的股票
 
 # ── 收盤價快取 ────────────────────────────────────────────────
 _price_cache: dict = {}   # { ticker: pd.Series }
@@ -465,6 +468,36 @@ def write_output(final: list[dict], sectors: list[dict],
 """)
 
 
+def save_history(final: list[dict], now: datetime):
+    today = now.strftime("%Y-%m-%d")
+    history: dict = {}
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            history = {}
+
+    for s in final:
+        if s["rs"] < HISTORY_MIN_RS:
+            continue
+        code = s["code"]
+        if code not in history:
+            history[code] = []
+        entries = history[code]
+        # 同一天只更新，不重複新增
+        if entries and entries[-1]["date"] == today:
+            entries[-1]["rs"] = s["rs"]
+        else:
+            entries.append({"date": today, "rs": s["rs"]})
+        # 只保留最近 N 天
+        history[code] = entries[-HISTORY_DAYS:]
+
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"  ✓ 歷史記錄已更新：{HISTORY_FILE}（{len(history)} 支股票）")
+
+
 # ════════════════════════════════════════════════════════════════
 #  主程式
 # ════════════════════════════════════════════════════════════════
@@ -499,6 +532,7 @@ def main():
     final   = finalize_results(raw_results)
     sectors = build_sectors(final)
     write_output(final, sectors, now, args.output)
+    save_history(final, now)
 
 
 if __name__ == "__main__":

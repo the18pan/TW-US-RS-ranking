@@ -94,7 +94,7 @@ jobs:
           git fetch origin master
           git reset --hard origin/master
           cp /tmp/rs_data_new.json docs/rs_data.json
-          git add docs/rs_data.json
+          git add docs/rs_data.json docs/rs_history.json
           # 只有資料有變動才 commit
           git diff --staged --quiet || \
             git commit -m "🤖 RS 排行更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
