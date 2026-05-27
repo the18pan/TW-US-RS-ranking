@@ -171,6 +171,10 @@ footer { padding: 12px 24px; border-top: 1px solid var(--border); font-size: 11p
     <a href="#">回測工具</a>
   </div>
   <div class="nav-time"><span class="dot-live"></span>資料來源：模擬示意 · <span id="update-time"></span></div>
+  <div class="nav-visitors" id="nav-visitors" style="font-family:var(--font-num);font-size:11px;color:var(--text3);white-space:nowrap;display:flex;align-items:center;gap:5px;">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+    <span id="visitor-count">--</span>
+  </div>
 </nav>
 
 <div class="page-header">
@@ -836,6 +840,19 @@ function onSearch() {
 }
 
 init();
+</script>
+
+<script data-goatcounter="https://martin.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
+<script>
+(function fetchVisitors() {
+  fetch('https://martin.goatcounter.com/counter//.json')
+    .then(r => r.json())
+    .then(d => {
+      const el = document.getElementById('visitor-count');
+      if (el && d.count) el.textContent = Number(d.count).toLocaleString() + ' 次瀏覽';
+    })
+    .catch(() => {});
+})();
 </script>
 </body>
 </html>
