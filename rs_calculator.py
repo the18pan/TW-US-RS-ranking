@@ -1,68 +1,79 @@
 #!/usr/bin/env python3
 """
-台股全市場 Minervini RS 計算器
-================================
-自動從台灣證券交易所抓取所有上市公司清單
-計算 RS Score、RS Line、SEPA 條件
-輸出 docs/rs_data.json（供 GitHub Pages 使用）
+Taiwan + US Minervini RS Ranking generator.
 
-RS Score = Q1×50% + Q2×25% + Q3×15% + Q4×10%
+Outputs:
+  docs/rs_data.json
+  docs/rs_history.json
+
+Method:
+  RS raw = Q1 * 50% + Q2 * 25% + Q3 * 15% + Q4 * 10%
+  Q1 = last 63 sessions, Q2 = prior 63, Q3 = prior 63, Q4 = prior 63.
+  RS = percentile inside each market. rs_global = percentile across all selected markets.
 """
 
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import math
 import os
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import requests
-import json, time, sys, warnings, argparse, pickle, threading, re
-from datetime import datetime, timezone, timedelta, date
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
+import sys
+import time
+import warnings
 from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+import requests
+import urllib3
+import yfinance as yf
+
 
 warnings.filterwarnings("ignore")
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ── 參數 ──────────────────────────────────────────────────────
-BENCHMARK   = "^TWII"
-WORKERS     = 12        # 並行執行緒
-MIN_DAYS    = 252       # 最少交易日（約 1 年）
-SLEEP       = 0.15      # 每次下載後等待秒數（降低 rate-limit 風險）
-OUTPUT_DIR  = "docs"    # GitHub Pages 預設目錄
-OUTPUT_FILE   = f"{OUTPUT_DIR}/rs_data.json"
-HISTORY_FILE  = f"{OUTPUT_DIR}/rs_history.json"
-CACHE_FILE    = "price_cache.pkl"   # 收盤價快取（不入 git）
-HISTORY_DAYS  = 180   # 保留最近幾天
-HISTORY_MIN_RS = 50   # 只記錄 RS >= 50 的股票
 
-# ── 收盤價快取 ────────────────────────────────────────────────
-_price_cache: dict = {}   # { ticker: pd.Series }
-_cache_lock = threading.Lock()
+OUTPUT_DIR = Path("docs")
+OUTPUT_FILE = OUTPUT_DIR / "rs_data.json"
+HISTORY_FILE = OUTPUT_DIR / "rs_history.json"
 
-def load_price_cache():
-    global _price_cache
-    if not __import__("os").path.exists(CACHE_FILE):
-        return
-    try:
-        with open(CACHE_FILE, "rb") as f:
-            _price_cache = pickle.load(f)
-        print(f"  ✓ 快取載入：{len(_price_cache)} 支股票")
-    except Exception as e:
-        print(f"  ⚠ 快取讀取失敗，將重新下載：{e}")
-        _price_cache = {}
+MIN_DAYS = 252
+DEFAULT_PERIOD = "620d"
+HISTORY_DAYS = 220
+HISTORY_MIN_RS = 50
 
-def save_price_cache():
-    try:
-        with open(CACHE_FILE, "wb") as f:
-            pickle.dump(_price_cache, f)
-    except Exception as e:
-        print(f"  ⚠ 快取儲存失敗：{e}")
+BENCHMARKS = {
+    "tw": "^TWII",
+    "us": "^GSPC",
+}
 
-# TWSE OpenAPI 產業別代碼 → 自訂板塊
-# 來源：openapi.twse.com.tw/v1/opendata/t187ap03_L 的「產業別」欄位
-SECTOR_MAP = {
-    "01": "建材營造",    # 水泥工業
+MARKET_NAMES = {
+    "tw": "台股",
+    "us": "美股",
+}
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+}
+
+
+TW_SECTOR_MAP = {
+    "01": "水泥",
     "02": "食品",
-    "03": "化學",        # 塑膠工業
-    "04": "紡織纖維",
+    "03": "塑膠",
+    "04": "紡織",
     "05": "電機機械",
     "06": "電器電纜",
     "08": "玻璃陶瓷",
@@ -75,534 +86,915 @@ SECTOR_MAP = {
     "16": "觀光餐旅",
     "17": "金融保險",
     "18": "貿易百貨",
-    "20": "其他",
-    "21": "化學",
-    "22": "生技醫療",
-    "23": "油電燃氣",
-    "24": "半導體",
-    "25": "電腦/週邊",
-    "26": "光電",
-    "27": "通信網路",
-    "28": "電子零組件",
-    "29": "電子通路",
-    "30": "資訊服務",
-    "31": "其他電子",
+    "20": "化學",
+    "21": "生技醫療",
+    "22": "油電燃氣",
+    "23": "半導體",
+    "24": "電腦週邊",
+    "25": "光電",
+    "26": "通信網路",
+    "27": "電子零組件",
+    "28": "電子通路",
+    "29": "資訊服務",
+    "30": "其他電子",
+    "31": "文化創意",
+    "32": "農業科技",
+    "33": "農業科技",
     "35": "綠能環保",
     "36": "數位雲端",
     "37": "運動休閒",
     "38": "居家生活",
-    "91": "其他",        # 存託憑證 (DR)
+    "80": "管理股票",
+    "91": "存託憑證",
 }
 
-# ════════════════════════════════════════════════════════════════
-#  Step 1：從證交所抓上市公司清單
-# ════════════════════════════════════════════════════════════════
-def fetch_twse_listed() -> list[dict]:
-    """
-    從 TWSE OpenAPI 抓取上市普通股清單（JSON 格式，不需解析 HTML）
-    API：https://openapi.twse.com.tw/v1/opendata/t187ap03_L
-    回傳 [{"code": "2330", "name": "台積電", "sector": "半導體"}, ...]
-    """
-    url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+US_EXCHANGE_MAP = {
+    "Q": "NASDAQ",
+    "G": "NASDAQ",
+    "S": "NASDAQ",
+    "N": "NYSE",
+    "A": "NYSEAMERICAN",
+    "P": "NYSEARCA",
+    "Z": "BATS",
+    "V": "IEX",
+}
 
-    print("  📡 連線至 TWSE OpenAPI...")
+BAD_US_NAME_PATTERNS = re.compile(
+    r"\b("
+    r"warrant|right|unit|units|preferred|preference|depositary share|"
+    r"note due|senior note|debenture|subordinated|contingent value right"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class StockMeta:
+    market: str
+    code: str
+    name: str
+    sector: str
+    industry: str
+    cap: str
+    market_cap: float
+    shares: int
+    yf_symbol: str
+    tv_symbol: str
+    exchange: str
+    currency: str
+
+
+def parse_int(value: object) -> int:
+    text = str(value or "").replace(",", "").replace("$", "").strip()
+    if not text or text in {"-", "None", "nan"}:
+        return 0
     try:
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print(f"  ❌ OpenAPI 抓取失敗：{e}")
-        sys.exit(1)
-
-    stocks = []
-    for item in data:
-        code     = str(item.get("公司代號", "")).strip()
-        name     = str(item.get("公司簡稱", "")).strip()
-        industry = str(item.get("產業別",   "")).strip()
-
-        # 只保留 4 位數字股票代號（普通股），排除 ETF、KY 股等特殊格式
-        if not code.isdigit() or len(code) != 4:
-            continue
-
-        # 依 SECTOR_MAP 對應板塊（部分比對）
-        sector = "其他"
-        for key, val in SECTOR_MAP.items():
-            if key in industry:
-                sector = val
-                break
-
-        # 已發行股數（股）→ 搭配收盤價算市值
-        try:
-            shares = int(str(item.get("已發行普通股數或TDR原股發行股數", "0")).replace(",", ""))
-        except ValueError:
-            shares = 0
-
-        stocks.append({"code": code, "name": name, "sector": sector, "shares": shares})
-
-    print(f"  ✓ 取得 {len(stocks)} 檔上市普通股")
-    return stocks
+        return int(float(text))
+    except ValueError:
+        return 0
 
 
-# ════════════════════════════════════════════════════════════════
-#  Step 2：下載收盤價
-# ════════════════════════════════════════════════════════════════
-def _fetch_yf(ticker: str, period: str, timeout: int = 20) -> pd.Series | None:
-    """直接從 yfinance 下載，回傳 Close Series 或 None。"""
+def parse_float(value: object) -> float:
+    text = str(value or "").replace(",", "").replace("$", "").replace("%", "").strip()
+    if not text or text in {"-", "None", "nan"}:
+        return 0.0
     try:
-        df = yf.download(ticker, period=period, auto_adjust=True,
-                         progress=False, timeout=timeout)
-        if df.empty:
-            return None
-        close = df["Close"]
-        if isinstance(close, pd.DataFrame):
-            close = close.squeeze()
-        return close.dropna()
-    except Exception:
-        return None
-
-def download_close(ticker: str, period: str = "580d") -> pd.Series | None:
-    today = date.today()
-
-    # ── 1. 快取命中：嘗試增量更新（只補最近幾天）────────────────
-    with _cache_lock:
-        cached = _price_cache.get(ticker)
-
-    if cached is not None:
-        last_date = cached.index[-1].date()
-        if last_date >= today:
-            return cached if len(cached) >= MIN_DAYS else None
-
-        # 快取有舊資料 → 只補最近 5 天
-        new_data = _fetch_yf(ticker, period="5d", timeout=10)
-        if new_data is not None and not new_data.empty:
-            merged = pd.concat([cached, new_data])
-            merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-            with _cache_lock:
-                _price_cache[ticker] = merged
-            return merged if len(merged) >= MIN_DAYS else None
-
-        # 增量失敗 → 直接用舊快取（今天沒收盤也無妨）
-        return cached if len(cached) >= MIN_DAYS else None
-
-    # ── 2. 快取不命中：完整下載 ──────────────────────────────────
-    for attempt in range(2):
-        close = _fetch_yf(ticker, period=period)
-        if close is not None and len(close) >= MIN_DAYS:
-            with _cache_lock:
-                _price_cache[ticker] = close
-            return close
-        if attempt == 0:
-            time.sleep(1)
-    return None
+        return float(text)
+    except ValueError:
+        return 0.0
 
 
-# ════════════════════════════════════════════════════════════════
-#  Step 3：核心計算
-# ════════════════════════════════════════════════════════════════
-def safe_pct(a, b) -> float:
+def safe_pct(current: object, base: object) -> float:
     try:
-        a, b = float(a), float(b)
-        if b == 0 or np.isnan(a) or np.isnan(b):
+        current_f = float(current)
+        base_f = float(base)
+        if base_f == 0 or np.isnan(current_f) or np.isnan(base_f):
             return 0.0
-        return round((a / b - 1) * 100, 2)
+        return round((current_f / base_f - 1) * 100, 2)
     except Exception:
         return 0.0
 
-def calc_rs_raw(s: pd.Series, b: pd.Series) -> dict | None:
-    s, b = s.align(b, join="inner")
-    s, b = s.dropna(), b.dropna()
-    if len(s) < MIN_DAYS:
-        return None
 
-    q1 = s.iloc[-1];    q1b = b.iloc[-1]
-    q1_60 = s.iloc[-63] if len(s) >= 63 else s.iloc[0]
-    b1_60 = b.iloc[-63] if len(b) >= 63 else b.iloc[0]
-
-    def qpct(ser, end_idx, start_idx):
-        n = len(ser)
-        ei = min(end_idx, n-1)
-        si = min(start_idx, n-1)
-        return safe_pct(ser.iloc[ei], ser.iloc[si])
-
-    q1s = qpct(s, -1, -63);   q1b_ = qpct(b, -1, -63)
-    q2s = qpct(s, -63, -126); q2b_ = qpct(b, -63, -126)
-    q3s = qpct(s, -126, -189); q3b_ = qpct(b, -126, -189)
-    q4s = qpct(s, -189, -252); q4b_ = qpct(b, -189, -252)
-
-    raw = q1s*0.5 + q2s*0.25 + q3s*0.15 + q4s*0.10
-
-    c1  = safe_pct(s.iloc[-1], s.iloc[-2])  if len(s) >= 2  else 0.0
-    c5  = safe_pct(s.iloc[-1], s.iloc[-6])  if len(s) >= 6  else 0.0
-    c1m = safe_pct(s.iloc[-1], s.iloc[-22]) if len(s) >= 22 else 0.0
-    c3m = safe_pct(s.iloc[-1], s.iloc[-63]) if len(s) >= 63 else 0.0
-
-    return dict(rs_raw=round(raw, 3),
-                q1=round(q1s,2), q2=round(q2s,2),
-                q3=round(q3s,2), q4=round(q4s,2),
-                c1=round(c1,2),  c5=round(c5,2),
-                c1m=round(c1m,2), c3m=round(c3m,2),
-                price=round(float(s.iloc[-1]), 2))
-
-def calc_rs_line_high(s: pd.Series, b: pd.Series, window: int = 252) -> bool:
-    s, b = s.align(b, join="inner")
-    s, b = s.dropna(), b.dropna()
-    if len(s) < 63:
-        return False
-    rs_line = s / b
-    w = min(window, len(rs_line))
-    peak = float(rs_line.rolling(w).max().iloc[-1])
-    cur  = float(rs_line.iloc[-1])
-    return cur >= peak * 0.999
-
-def check_sepa(close: pd.Series) -> dict:
-    n = len(close)
-    d = dict(rs70=False, above_150ma=False, above_200ma=False,
-             ma200_up=False, ma150_gt_200=False, near_52w_high=False)
-    if n < 200:
-        return d
-    price  = float(close.iloc[-1])
-    ma150  = float(close.rolling(150).mean().iloc[-1])
-    ma200  = float(close.rolling(200).mean().iloc[-1])
-    ma200_prev = float(close.rolling(200).mean().iloc[-22]) if n >= 222 else ma200
-    w52    = min(252, n)
-    high52 = float(close.rolling(w52).max().iloc[-1])
-    d["above_150ma"]   = price > ma150
-    d["above_200ma"]   = price > ma200
-    d["ma200_up"]      = ma200 > ma200_prev
-    d["ma150_gt_200"]  = ma150 > ma200
-    d["near_52w_high"] = price >= high52 * 0.75
-    return d
-
-def raw_to_percentile(raws: list[float]) -> list[int]:
-    arr = np.array(raws, dtype=float)
-    result = []
-    for v in arr:
-        pct = np.sum(arr <= v) / len(arr) * 98 + 1
-        result.append(int(round(pct)))
-    return result
+def clean_symbol_for_yahoo(symbol: str) -> str:
+    return symbol.strip().replace(".", "-").replace("/", "-")
 
 
-# ════════════════════════════════════════════════════════════════
-#  Step 4：單一股票的完整計算（供多執行緒呼叫）
-# ════════════════════════════════════════════════════════════════
-def process_stock(stock: dict, bench: pd.Series, verbose: bool = False) -> dict | None:
-    code = stock["code"]
-    ticker_tw  = f"{code}.TW"
-    ticker_two = f"{code}.TWO"
-
-    close = download_close(ticker_tw)
-    if close is None:
-        close = download_close(ticker_two)
-    if close is None:
-        if verbose:
-            print(f"  ⚠  {code} 資料不足，跳過")
-        return None
-
-    rs_data = calc_rs_raw(close, bench)
-    if rs_data is None:
-        return None
-
-    rs_high  = calc_rs_line_high(close, bench)
-    sepa_det = check_sepa(close)
-
-    time.sleep(SLEEP)
-
-    shares = stock.get("shares", 0)
-    if shares and rs_data["price"] > 0:
-        mc = shares * rs_data["price"]   # 市值（元）
-        if mc >= 100e9:   cap = "大"     # ≥ 1000億
-        elif mc >= 10e9:  cap = "中"     # ≥ 100億
-        else:             cap = "小"
-    else:
-        cap = "—"
-
-    return dict(
-        code    = code,
-        name    = stock["name"],
-        sector  = stock["sector"],
-        cap     = cap,
-        rs_raw  = rs_data["rs_raw"],
-        q1=rs_data["q1"], q2=rs_data["q2"],
-        q3=rs_data["q3"], q4=rs_data["q4"],
-        c1=rs_data["c1"], c5=rs_data["c5"],
-        c1m=rs_data["c1m"], c3m=rs_data["c3m"],
-        price   = rs_data["price"],
-        rsHigh  = rs_high,
-        sepa_detail = sepa_det,
-    )
+def get_with_retry(
+    url: str,
+    *,
+    headers: dict | None = None,
+    timeout: int = 30,
+    verify: bool = True,
+    attempts: int = 3,
+) -> requests.Response:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(url, headers=headers or HEADERS, timeout=timeout, verify=verify)
+            response.raise_for_status()
+            return response
+        except Exception as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+            wait = attempt * 2
+            print(f"  Request failed ({attempt}/{attempts}) for {url}; retrying in {wait}s: {exc}")
+            time.sleep(wait)
+    raise last_error  # type: ignore[misc]
 
 
-# ════════════════════════════════════════════════════════════════
-#  Step 5：板塊彙整
-# ════════════════════════════════════════════════════════════════
-def build_sectors(results: list[dict]) -> list[dict]:
-    grp = defaultdict(list)
-    for r in results:
-        grp[r["sector"]].append(r)
+def json_safe(value: object) -> object:
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        value_f = float(value)
+        return value_f if math.isfinite(value_f) else None
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [json_safe(v) for v in value]
+    return value
 
-    out = []
-    for sector, items in grp.items():
-        rs_vals = [i["rs"] for i in items]
-        out.append(dict(
-            name    = sector,
-            count   = len(items),
-            avg_rs  = round(float(np.mean(rs_vals)), 1),
-            median_rs = round(float(np.median(rs_vals)), 1),
-            rs90_count = sum(1 for r in rs_vals if r >= 90),
-            rs70_count = sum(1 for r in rs_vals if r >= 70),
-            avg_c1  = round(float(np.mean([i["c1"]  for i in items])), 2),
-            avg_c5  = round(float(np.mean([i["c5"]  for i in items])), 2),
-            avg_c1m = round(float(np.mean([i["c1m"] for i in items])), 2),
-            flow    = round(float(np.mean(rs_vals)) * 1.1, 1),
-            flow5   = round(float(np.mean([i["c5"] for i in items])) * 40, 1),
-            weeks   = [],  # 歷史週資料保留空白（完整版需逐週計算，耗時較長）
-        ))
-    out.sort(key=lambda x: x["avg_rs"], reverse=True)
+
+def cap_bucket_tw(market_cap_ntd: float) -> str:
+    if market_cap_ntd >= 100_000_000_000:
+        return "L"
+    if market_cap_ntd >= 10_000_000_000:
+        return "M"
+    return "S"
+
+
+def cap_bucket_us(market_cap_usd: float) -> str:
+    if market_cap_usd >= 200_000_000_000:
+        return "L"
+    if market_cap_usd >= 10_000_000_000:
+        return "M"
+    return "S"
+
+
+def normalize_market_list(raw: str) -> list[str]:
+    markets = [m.strip().lower() for m in raw.split(",") if m.strip()]
+    invalid = [m for m in markets if m not in MARKET_NAMES]
+    if invalid:
+        raise SystemExit(f"Unsupported market(s): {', '.join(invalid)}")
+    return list(dict.fromkeys(markets))
+
+
+def normalize_board_list(raw: str) -> list[str]:
+    boards = [b.strip().lower() for b in raw.split(",") if b.strip()]
+    invalid = [b for b in boards if b not in {"listed", "otc"}]
+    if invalid:
+        raise SystemExit(f"Unsupported Taiwan board(s): {', '.join(invalid)}")
+    return list(dict.fromkeys(boards))
+
+
+def fetch_twse_listed() -> list[StockMeta]:
+    url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+    print("Fetching TWSE listed universe...")
+    response = get_with_retry(url, headers=HEADERS, timeout=30)
+    rows = response.json()
+
+    stocks: list[StockMeta] = []
+    for item in rows:
+        code = str(item.get("公司代號", "")).strip()
+        if not code.isdigit() or len(code) != 4:
+            continue
+        industry_code = str(item.get("產業別", "")).strip()
+        sector = TW_SECTOR_MAP.get(industry_code, "其他")
+        shares = parse_int(item.get("已發行普通股數或TDR原股發行股數"))
+        name = str(item.get("公司簡稱") or item.get("公司名稱") or code).strip()
+        stocks.append(
+            StockMeta(
+                market="tw",
+                code=code,
+                name=name,
+                sector=sector,
+                industry=industry_code,
+                cap="S",
+                market_cap=0.0,
+                shares=shares,
+                yf_symbol=f"{code}.TW",
+                tv_symbol=f"TWSE:{code}",
+                exchange="TWSE",
+                currency="TWD",
+            )
+        )
+    print(f"  TWSE: {len(stocks)} symbols")
+    return stocks
+
+
+def fetch_tpex_otc() -> list[StockMeta]:
+    url = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+    print("Fetching TPEx OTC universe...")
+    response = get_with_retry(url, headers=HEADERS, timeout=30, verify=False)
+    rows = response.json()
+
+    stocks: list[StockMeta] = []
+    for item in rows:
+        code = str(item.get("SecuritiesCompanyCode", "")).strip()
+        if not code.isdigit() or len(code) != 4:
+            continue
+        industry_code = str(item.get("SecuritiesIndustryCode", "")).strip()
+        sector = TW_SECTOR_MAP.get(industry_code, "其他")
+        shares = parse_int(item.get("IssueShares"))
+        name = str(item.get("CompanyAbbreviation") or item.get("CompanyName") or code).strip()
+        stocks.append(
+            StockMeta(
+                market="tw",
+                code=code,
+                name=name,
+                sector=sector,
+                industry=industry_code,
+                cap="S",
+                market_cap=0.0,
+                shares=shares,
+                yf_symbol=f"{code}.TWO",
+                tv_symbol=f"TPEX:{code}",
+                exchange="TPEX",
+                currency="TWD",
+            )
+        )
+    print(f"  TPEx OTC: {len(stocks)} symbols")
+    return stocks
+
+
+def fallback_universe_from_existing_data(market: str) -> list[StockMeta]:
+    if not OUTPUT_FILE.exists():
+        return []
+    try:
+        data = json.loads(OUTPUT_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    stocks: list[StockMeta] = []
+    for row in data.get("stocks", []):
+        if row.get("market") != market:
+            continue
+        code = str(row.get("code") or "").strip()
+        yf_symbol = str(row.get("yf_symbol") or code).strip()
+        if not code or not yf_symbol:
+            continue
+        stocks.append(
+            StockMeta(
+                market=market,
+                code=code,
+                name=str(row.get("name") or code),
+                sector=str(row.get("sector") or "Other"),
+                industry=str(row.get("industry") or ""),
+                cap=str(row.get("cap") or "S"),
+                market_cap=float(row.get("market_cap") or 0),
+                shares=0,
+                yf_symbol=yf_symbol,
+                tv_symbol=str(row.get("tv_symbol") or code),
+                exchange=str(row.get("exchange") or ""),
+                currency=str(row.get("currency") or ("USD" if market == "us" else "TWD")),
+            )
+        )
+    if stocks:
+        print(f"  Fallback {MARKET_NAMES.get(market, market)} universe from existing rs_data.json: {len(stocks)} symbols")
+    return stocks
+
+
+def fetch_us_exchange_map() -> dict[str, str]:
+    exchange_by_symbol: dict[str, str] = {}
+
+    urls = [
+        "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+        "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+    ]
+    for url in urls:
+        try:
+            response = get_with_retry(url, headers=HEADERS, timeout=30)
+        except Exception as exc:
+            print(f"  Warning: exchange map failed for {url}: {exc}")
+            continue
+
+        frame = pd.read_csv(io.StringIO(response.text), sep="|")
+        frame = frame.dropna(how="all")
+        if "Symbol" in frame.columns:
+            for _, row in frame.iterrows():
+                symbol = str(row.get("Symbol", "")).strip()
+                if symbol and symbol != "File Creation Time":
+                    exchange_by_symbol[symbol] = "NASDAQ"
+        elif "ACT Symbol" in frame.columns:
+            for _, row in frame.iterrows():
+                symbol = str(row.get("ACT Symbol", "")).strip()
+                exchange_code = str(row.get("Exchange", "")).strip()
+                if symbol and symbol != "File Creation Time":
+                    exchange_by_symbol[symbol] = US_EXCHANGE_MAP.get(exchange_code, exchange_code or "US")
+    return exchange_by_symbol
+
+
+def fetch_us_screener() -> list[StockMeta]:
+    url = "https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=25&offset=0&download=true"
+    headers = {
+        **HEADERS,
+        "Origin": "https://www.nasdaq.com",
+        "Referer": "https://www.nasdaq.com/market-activity/stocks/screener",
+    }
+    print("Fetching US listed universe from NASDAQ screener...")
+    response = get_with_retry(url, headers=headers, timeout=45)
+    payload = response.json()
+    rows = payload.get("data", {}).get("rows", [])
+    exchange_map = fetch_us_exchange_map()
+
+    stocks: list[StockMeta] = []
+    for row in rows:
+        symbol = str(row.get("symbol", "")).strip()
+        name = str(row.get("name", "")).strip()
+        if not symbol or not name:
+            continue
+        if "^" in symbol or "/" in symbol:
+            continue
+        if BAD_US_NAME_PATTERNS.search(name):
+            continue
+
+        market_cap = parse_float(row.get("marketCap"))
+        sector = str(row.get("sector") or "Other").strip() or "Other"
+        industry = str(row.get("industry") or "").strip()
+        exchange = exchange_map.get(symbol, "US")
+        tv_symbol = f"{exchange}:{symbol}" if exchange not in {"US", ""} else symbol
+        stocks.append(
+            StockMeta(
+                market="us",
+                code=symbol,
+                name=name,
+                sector=sector,
+                industry=industry,
+                cap=cap_bucket_us(market_cap),
+                market_cap=market_cap,
+                shares=0,
+                yf_symbol=clean_symbol_for_yahoo(symbol),
+                tv_symbol=tv_symbol,
+                exchange=exchange,
+                currency="USD",
+            )
+        )
+
+    stocks.sort(key=lambda s: s.market_cap, reverse=True)
+    print(f"  US screener: {len(stocks)} symbols after filters")
+    return stocks
+
+
+def fetch_sp500_symbols() -> set[str]:
+    print("Fetching S&P 500 symbol filter from Wikipedia...")
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    response = get_with_retry(url, headers=HEADERS, timeout=30)
+    tables = pd.read_html(io.StringIO(response.text))
+    frame = tables[0]
+    return {clean_symbol_for_yahoo(str(s)) for s in frame["Symbol"].tolist()}
+
+
+def fetch_universe(args: argparse.Namespace) -> list[StockMeta]:
+    markets = normalize_market_list(args.markets)
+    universe: list[StockMeta] = []
+
+    if "tw" in markets:
+        tw_stocks: list[StockMeta] = []
+        boards = normalize_board_list(args.tw_boards)
+        try:
+            if "listed" in boards:
+                tw_stocks.extend(fetch_twse_listed())
+            if "otc" in boards:
+                try:
+                    tw_stocks.extend(fetch_tpex_otc())
+                except Exception as exc:
+                    print(f"  Warning: TPEx fetch failed, continuing with TWSE only: {exc}")
+        except Exception as exc:
+            print(f"  Warning: Taiwan universe fetch failed: {exc}")
+            tw_stocks = fallback_universe_from_existing_data("tw")
+            if not tw_stocks:
+                raise
+        tw_stocks = dedupe_by_key(tw_stocks, "yf_symbol")
+        if args.tw_limit:
+            tw_stocks = tw_stocks[: args.tw_limit]
+        universe.extend(tw_stocks)
+
+    if "us" in markets:
+        try:
+            us_stocks = fetch_us_screener()
+            if args.us_universe == "sp500":
+                sp500 = fetch_sp500_symbols()
+                us_stocks = [s for s in us_stocks if s.yf_symbol in sp500]
+        except Exception as exc:
+            print(f"  Warning: US universe fetch failed: {exc}")
+            us_stocks = fallback_universe_from_existing_data("us")
+            if not us_stocks:
+                raise
+        if args.min_us_market_cap:
+            us_stocks = [s for s in us_stocks if s.market_cap >= args.min_us_market_cap]
+        if args.us_limit:
+            us_stocks = us_stocks[: args.us_limit]
+        universe.extend(us_stocks)
+
+    universe = dedupe_by_key(universe, "yf_symbol")
+    if not universe:
+        raise SystemExit("No symbols in selected universe.")
+
+    print(f"Total universe: {len(universe)} symbols")
+    return universe
+
+
+def dedupe_by_key(items: Iterable[StockMeta], attr: str) -> list[StockMeta]:
+    out: list[StockMeta] = []
+    seen: set[str] = set()
+    for item in items:
+        key = str(getattr(item, attr))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
     return out
 
 
-# ════════════════════════════════════════════════════════════════
-#  主程式輔助函式
-# ════════════════════════════════════════════════════════════════
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--workers",       type=int,  default=WORKERS)
-    parser.add_argument("--output",        type=str,  default=OUTPUT_FILE)
-    parser.add_argument("--verbose",       action="store_true")
-    parser.add_argument("--backfill",      action="store_true", help="強制回填歷史 RS")
-    parser.add_argument("--backfill-days", type=int,  default=180, help="回填天數")
+def extract_close_from_download(df: pd.DataFrame, symbol: str, chunk_len: int) -> pd.Series | None:
+    if df is None or df.empty:
+        return None
+
+    try:
+        if chunk_len == 1:
+            close = df["Close"]
+        elif isinstance(df.columns, pd.MultiIndex):
+            if (symbol, "Close") in df.columns:
+                close = df[(symbol, "Close")]
+            elif ("Close", symbol) in df.columns:
+                close = df[("Close", symbol)]
+            else:
+                return None
+        else:
+            close = df["Close"]
+        if isinstance(close, pd.DataFrame):
+            close = close.squeeze()
+        close = close.dropna()
+        return close if len(close) >= MIN_DAYS else None
+    except Exception:
+        return None
+
+
+def download_prices(symbols: list[str], period: str, chunk_size: int) -> dict[str, pd.Series]:
+    prices: dict[str, pd.Series] = {}
+    total_chunks = math.ceil(len(symbols) / chunk_size)
+    for idx in range(0, len(symbols), chunk_size):
+        chunk = symbols[idx : idx + chunk_size]
+        chunk_no = idx // chunk_size + 1
+        print(f"Downloading prices chunk {chunk_no}/{total_chunks} ({len(chunk)} symbols)...")
+
+        df = pd.DataFrame()
+        for attempt in range(2):
+            try:
+                df = yf.download(
+                    tickers=chunk,
+                    period=period,
+                    auto_adjust=True,
+                    progress=False,
+                    group_by="ticker",
+                    threads=True,
+                    timeout=30,
+                )
+                if not df.empty:
+                    break
+            except Exception as exc:
+                print(f"  yfinance chunk failed on attempt {attempt + 1}: {exc}")
+            time.sleep(1.5)
+
+        for symbol in chunk:
+            close = extract_close_from_download(df, symbol, len(chunk))
+            if close is not None:
+                prices[symbol] = close
+
+    print(f"Downloaded usable price series: {len(prices)}/{len(symbols)}")
+    return prices
+
+
+def download_benchmarks(markets: list[str], period: str) -> dict[str, pd.Series]:
+    symbols = [BENCHMARKS[m] for m in markets]
+    raw = download_prices(symbols, period=period, chunk_size=max(1, len(symbols)))
+    benchmarks: dict[str, pd.Series] = {}
+    for market in markets:
+        symbol = BENCHMARKS[market]
+        series = raw.get(symbol)
+        if series is None:
+            raise SystemExit(f"Benchmark download failed: {symbol}")
+        benchmarks[market] = series
+        print(f"Benchmark {symbol}: {len(series)} bars")
+    return benchmarks
+
+
+def quarterly_returns(series: pd.Series) -> dict[str, float]:
+    def qpct(end_idx: int, start_idx: int) -> float:
+        n = len(series)
+        end = min(abs(end_idx), n)
+        start = min(abs(start_idx), n)
+        return safe_pct(series.iloc[-end], series.iloc[-start])
+
+    return {
+        "q1": qpct(1, 63),
+        "q2": qpct(63, 126),
+        "q3": qpct(126, 189),
+        "q4": qpct(189, 252),
+    }
+
+
+def calc_rs_raw(close: pd.Series) -> dict[str, float] | None:
+    close = close.dropna()
+    if len(close) < MIN_DAYS:
+        return None
+
+    q = quarterly_returns(close)
+    raw = q["q1"] * 0.50 + q["q2"] * 0.25 + q["q3"] * 0.15 + q["q4"] * 0.10
+    c1 = safe_pct(close.iloc[-1], close.iloc[-2]) if len(close) >= 2 else 0.0
+    c5 = safe_pct(close.iloc[-1], close.iloc[-6]) if len(close) >= 6 else 0.0
+    c1m = safe_pct(close.iloc[-1], close.iloc[-22]) if len(close) >= 22 else 0.0
+    c3m = safe_pct(close.iloc[-1], close.iloc[-63]) if len(close) >= 63 else 0.0
+
+    return {
+        "rs_raw": round(float(raw), 3),
+        "q1": q["q1"],
+        "q2": q["q2"],
+        "q3": q["q3"],
+        "q4": q["q4"],
+        "c1": round(c1, 2),
+        "c5": round(c5, 2),
+        "c1m": round(c1m, 2),
+        "c3m": round(c3m, 2),
+        "price": round(float(close.iloc[-1]), 2),
+    }
+
+
+def calc_rs_line_high(close: pd.Series, benchmark: pd.Series, window: int = 252) -> bool:
+    close_aligned, bench_aligned = close.align(benchmark, join="inner")
+    close_aligned = close_aligned.dropna()
+    bench_aligned = bench_aligned.dropna()
+    if len(close_aligned) < 63 or len(bench_aligned) < 63:
+        return False
+    rs_line = close_aligned / bench_aligned
+    rs_line = rs_line.dropna()
+    if rs_line.empty:
+        return False
+    window = min(window, len(rs_line))
+    peak = float(rs_line.rolling(window).max().iloc[-1])
+    current = float(rs_line.iloc[-1])
+    return current >= peak * 0.999
+
+
+def check_sepa(close: pd.Series) -> dict[str, bool]:
+    close = close.dropna()
+    n = len(close)
+    checks = {
+        "rs70": False,
+        "above_150ma": False,
+        "above_200ma": False,
+        "ma200_up": False,
+        "ma150_gt_200": False,
+        "near_52w_high": False,
+    }
+    if n < 200:
+        return checks
+
+    price = float(close.iloc[-1])
+    ma150_series = close.rolling(150).mean()
+    ma200_series = close.rolling(200).mean()
+    ma150 = float(ma150_series.iloc[-1])
+    ma200 = float(ma200_series.iloc[-1])
+    ma200_prev = float(ma200_series.iloc[-22]) if n >= 222 else ma200
+    high52 = float(close.rolling(min(252, n)).max().iloc[-1])
+
+    checks["above_150ma"] = price > ma150
+    checks["above_200ma"] = price > ma200
+    checks["ma200_up"] = ma200 > ma200_prev
+    checks["ma150_gt_200"] = ma150 > ma200
+    checks["near_52w_high"] = price >= high52 * 0.75
+    return checks
+
+
+def raw_to_percentile(raws: list[float]) -> list[int]:
+    if not raws:
+        return []
+    arr = np.array(raws, dtype=float)
+    out: list[int] = []
+    for value in arr:
+        pct = np.sum(arr <= value) / len(arr) * 98 + 1
+        out.append(int(round(pct)))
+    return out
+
+
+def process_results(
+    universe: list[StockMeta],
+    prices: dict[str, pd.Series],
+    benchmarks: dict[str, pd.Series],
+) -> list[dict]:
+    results: list[dict] = []
+    missing = 0
+    for stock in universe:
+        close = prices.get(stock.yf_symbol)
+        if close is None:
+            missing += 1
+            continue
+
+        rs_data = calc_rs_raw(close)
+        if rs_data is None:
+            missing += 1
+            continue
+
+        price = rs_data["price"]
+        market_cap = stock.market_cap
+        cap = stock.cap
+        if stock.market == "tw" and stock.shares and price:
+            market_cap = float(stock.shares) * float(price)
+            cap = cap_bucket_tw(market_cap)
+        elif stock.market == "us":
+            cap = cap_bucket_us(market_cap) if market_cap else stock.cap
+
+        sepa_detail = check_sepa(close)
+        rs_high = calc_rs_line_high(close, benchmarks[stock.market])
+
+        results.append(
+            {
+                "market": stock.market,
+                "market_name": MARKET_NAMES[stock.market],
+                "code": stock.code,
+                "name": stock.name,
+                "sector": stock.sector or "Other",
+                "industry": stock.industry or "",
+                "cap": cap,
+                "market_cap": round(market_cap, 0),
+                "currency": stock.currency,
+                "exchange": stock.exchange,
+                "yf_symbol": stock.yf_symbol,
+                "tv_symbol": stock.tv_symbol,
+                "rs_raw": rs_data["rs_raw"],
+                "q1": rs_data["q1"],
+                "q2": rs_data["q2"],
+                "q3": rs_data["q3"],
+                "q4": rs_data["q4"],
+                "c1": rs_data["c1"],
+                "c5": rs_data["c5"],
+                "c1m": rs_data["c1m"],
+                "c3m": rs_data["c3m"],
+                "price": price,
+                "rsHigh": rs_high,
+                "sepa_detail": sepa_detail,
+            }
+        )
+
+    print(f"Processed results: {len(results)} usable, {missing} skipped")
+    if not results:
+        raise SystemExit("No usable price series. Try a smaller universe or rerun later.")
+    return finalize_results(results)
+
+
+def finalize_results(results: list[dict]) -> list[dict]:
+    global_pcts = raw_to_percentile([r["rs_raw"] for r in results])
+    for row, pct in zip(results, global_pcts):
+        row["rs_global"] = pct
+
+    by_market: dict[str, list[dict]] = defaultdict(list)
+    for row in results:
+        by_market[row["market"]].append(row)
+
+    for market_rows in by_market.values():
+        pcts = raw_to_percentile([r["rs_raw"] for r in market_rows])
+        for row, pct in zip(market_rows, pcts):
+            row["rs"] = pct
+            row["sepa_detail"]["rs70"] = pct >= 70
+            technical_passes = [v for k, v in row["sepa_detail"].items() if k != "rs70"]
+            row["sepa"] = row["sepa_detail"]["rs70"] and sum(bool(v) for v in technical_passes) >= 4
+
+    results.sort(key=lambda x: (x["rs"], x["rs_global"], x["rs_raw"]), reverse=True)
+    return results
+
+
+def build_sector_flow(results: list[dict]) -> list[dict]:
+    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in results:
+        grouped[(row["market"], row["sector"])].append(row)
+
+    sectors: list[dict] = []
+    for (market, sector), rows in grouped.items():
+        rs_vals = [r["rs"] for r in rows]
+        avg_rs = float(np.mean(rs_vals))
+        avg_c5 = float(np.mean([r["c5"] for r in rows]))
+        sectors.append(
+            {
+                "market": market,
+                "market_name": MARKET_NAMES[market],
+                "name": sector,
+                "label": f"{MARKET_NAMES[market]} / {sector}",
+                "count": len(rows),
+                "avg_rs": round(avg_rs, 1),
+                "median_rs": round(float(np.median(rs_vals)), 1),
+                "rs90_count": sum(1 for value in rs_vals if value >= 90),
+                "rs70_count": sum(1 for value in rs_vals if value >= 70),
+                "avg_c1": round(float(np.mean([r["c1"] for r in rows])), 2),
+                "avg_c5": round(avg_c5, 2),
+                "avg_c1m": round(float(np.mean([r["c1m"] for r in rows])), 2),
+                "flow": round(avg_rs, 1),
+                "flow5": round(avg_c5 * 40, 1),
+                "weeks": [],
+            }
+        )
+    sectors.sort(key=lambda x: (x["avg_rs"], x["count"]), reverse=True)
+    return sectors
+
+
+def summarize(results: list[dict]) -> dict:
+    by_market = {}
+    for market in MARKET_NAMES:
+        rows = [r for r in results if r["market"] == market]
+        by_market[market] = {
+            "name": MARKET_NAMES[market],
+            "total": len(rows),
+            "rs90": sum(1 for r in rows if r["rs"] >= 90),
+            "rs70": sum(1 for r in rows if r["rs"] >= 70),
+            "sepa": sum(1 for r in rows if r["sepa"]),
+            "rs_line_high": sum(1 for r in rows if r["rsHigh"]),
+        }
+
+    return {
+        "rs90": sum(1 for r in results if r["rs"] >= 90),
+        "rs70": sum(1 for r in results if r["rs"] >= 70),
+        "sepa": sum(1 for r in results if r["sepa"]),
+        "rs_line_high": sum(1 for r in results if r["rsHigh"]),
+        "by_market": by_market,
+    }
+
+
+def load_history() -> dict:
+    if not HISTORY_FILE.exists():
+        return {}
+    try:
+        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_history(results: list[dict], now: datetime) -> None:
+    today = now.strftime("%Y-%m-%d")
+    history = load_history()
+
+    for row in results:
+        if row["rs"] < HISTORY_MIN_RS:
+            continue
+        key = f"{row['market']}:{row['code']}"
+        entries = history.setdefault(key, [])
+        if entries and entries[-1].get("date") == today:
+            entries[-1]["rs"] = row["rs"]
+            entries[-1]["rs_global"] = row.get("rs_global")
+        else:
+            entries.append({"date": today, "rs": row["rs"], "rs_global": row.get("rs_global")})
+        history[key] = entries[-HISTORY_DAYS:]
+
+    HISTORY_FILE.write_text(
+        json.dumps(json_safe(history), ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"History saved: {HISTORY_FILE} ({len(history)} symbols)")
+
+
+def history_needs_backfill() -> bool:
+    history = load_history()
+    if not history:
+        return True
+    max_len = max((len(entries) for entries in history.values()), default=0)
+    return max_len < 2
+
+
+def build_backfilled_history(
+    results: list[dict],
+    prices: dict[str, pd.Series],
+    benchmarks: dict[str, pd.Series],
+    days: int,
+) -> dict:
+    print(f"Backfilling RS history for last {days} benchmark sessions...")
+    by_market: dict[str, list[dict]] = defaultdict(list)
+    for row in results:
+        by_market[row["market"]].append(row)
+
+    history: dict[str, list[dict]] = {}
+    for market, market_rows in by_market.items():
+        benchmark = benchmarks.get(market)
+        if benchmark is None or benchmark.empty:
+            continue
+        trade_dates = benchmark.dropna().index[-days:]
+        print(f"  {MARKET_NAMES.get(market, market)}: {len(market_rows)} symbols, {len(trade_dates)} dates")
+
+        for idx, trade_date in enumerate(trade_dates, start=1):
+            raw_rows: list[tuple[dict, float]] = []
+            for row in market_rows:
+                close = prices.get(row["yf_symbol"])
+                if close is None:
+                    continue
+                close_slice = close.loc[:trade_date]
+                rs_data = calc_rs_raw(close_slice)
+                if rs_data is not None:
+                    raw_rows.append((row, rs_data["rs_raw"]))
+
+            if not raw_rows:
+                continue
+
+            pcts = raw_to_percentile([raw for _, raw in raw_rows])
+            date_str = pd.Timestamp(trade_date).strftime("%Y-%m-%d")
+            for (row, _), rs in zip(raw_rows, pcts):
+                if rs < HISTORY_MIN_RS:
+                    continue
+                key = f"{row['market']}:{row['code']}"
+                history.setdefault(key, []).append(
+                    {
+                        "date": date_str,
+                        "rs": rs,
+                    }
+                )
+
+            if idx % 20 == 0 or idx == len(trade_dates):
+                print(f"    {idx}/{len(trade_dates)} dates")
+
+    return history
+
+
+def write_history(history: dict) -> None:
+    HISTORY_FILE.write_text(
+        json.dumps(json_safe(history), ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"History saved: {HISTORY_FILE} ({len(history)} symbols)")
+
+
+def write_output(results: list[dict], sectors: list[dict], now: datetime, args: argparse.Namespace) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    markets = normalize_market_list(args.markets)
+    output = {
+        "schema_version": 2,
+        "updated_at": now.strftime("%Y-%m-%d %H:%M"),
+        "timezone": "Asia/Taipei",
+        "total": len(results),
+        "markets": {m: {"name": MARKET_NAMES[m], "benchmark": BENCHMARKS[m]} for m in markets},
+        "formula": "RS raw = Q1*50% + Q2*25% + Q3*15% + Q4*10%; RS = market percentile",
+        "sources": {
+            "prices": "yfinance",
+            "tw": "TWSE OpenAPI + TPEx OpenAPI",
+            "us": "NASDAQ screener + NASDAQ Trader symbol directory",
+        },
+        "summary": summarize(results),
+        "stocks": results,
+        "sectors": sectors,
+    }
+    OUTPUT_FILE.write_text(
+        json.dumps(json_safe(output), ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    print(f"Data saved: {OUTPUT_FILE} ({OUTPUT_FILE.stat().st_size / 1024:.0f} KB)")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build Taiwan + US RS ranking JSON for GitHub Pages.")
+    parser.add_argument("--markets", default="tw,us", help="Comma-separated markets: tw,us")
+    parser.add_argument("--tw-boards", default="listed,otc", help="Taiwan boards: listed,otc")
+    parser.add_argument("--us-universe", choices=["all", "sp500"], default="all")
+    parser.add_argument("--tw-limit", type=int, default=0, help="Limit Taiwan symbols for testing.")
+    parser.add_argument("--us-limit", type=int, default=0, help="Limit US symbols for testing.")
+    parser.add_argument("--min-us-market-cap", type=float, default=0, help="Filter US by market cap in USD.")
+    parser.add_argument("--period", default=DEFAULT_PERIOD)
+    parser.add_argument("--chunk-size", type=int, default=80)
+    parser.add_argument("--backfill-history", action="store_true", help="Force rebuilding rs_history.json.")
+    parser.add_argument("--history-days", type=int, default=90, help="Benchmark sessions to backfill for RS history.")
     return parser.parse_args()
 
 
-def load_benchmark() -> pd.Series:
-    print(f"\n▶ [1/4] 下載基準指數 {BENCHMARK}...")
-    bench = download_close(BENCHMARK)
-    if bench is None:
-        print("  ❌ 無法下載加權指數，中止")
-        sys.exit(1)
-    print(f"  ✓ {len(bench)} 筆交易日資料")
-    return bench
-
-
-def run_parallel(stocks: list[dict], bench: pd.Series,
-                 workers: int, verbose: bool) -> list[dict]:
-    print(f"\n▶ [3/4] 計算 RS（{len(stocks)} 檔 × {workers} 執行緒）...")
-    print(f"  預估時間：約 {int(len(stocks) * SLEEP / workers / 60) + 1} 分鐘\n")
-
-    raw_results = []
-    done = failed = 0
-    start_time = time.time()
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(process_stock, s, bench, verbose): s
-            for s in stocks
-        }
-        for future in as_completed(futures):
-            done += 1
-            result = future.result()
-            if result:
-                raw_results.append(result)
-            else:
-                failed += 1
-
-            pct     = done / len(stocks) * 100
-            bar     = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
-            elapsed = time.time() - start_time
-            eta     = elapsed / done * (len(stocks) - done) if done > 0 else 0
-            print(f"  [{bar}] {pct:4.0f}%  {done}/{len(stocks)}  "
-                  f"成功:{len(raw_results)}  失敗:{failed}  "
-                  f"ETA:{int(eta//60)}:{int(eta%60):02d}",
-                  end="\r", flush=True)
-
-    elapsed_total = time.time() - start_time
-    print(f"\n\n  ✓ 完成，耗時 {int(elapsed_total//60)}分{int(elapsed_total%60)}秒")
-    return raw_results
-
-
-def finalize_results(raw_results: list[dict]) -> list[dict]:
-    pcts = raw_to_percentile([r["rs_raw"] for r in raw_results])
-    final = []
-    for r, rs in zip(raw_results, pcts):
-        r["rs"] = rs
-        r["sepa_detail"]["rs70"] = rs >= 70
-        other = [v for k, v in r["sepa_detail"].items() if k != "rs70"]
-        r["sepa"] = r["sepa_detail"]["rs70"] and sum(other) >= 4
-        final.append(r)
-    final.sort(key=lambda x: x["rs"], reverse=True)
-    return final
-
-
-def write_output(final: list[dict], sectors: list[dict],
-                 now: datetime, output_path: str):
-    rs90   = sum(1 for r in final if r["rs"] >= 90)
-    rs70   = sum(1 for r in final if r["rs"] >= 70)
-    sepa_n = sum(1 for r in final if r["sepa"])
-    high_n = sum(1 for r in final if r["rsHigh"])
-    top    = final[0] if final else {}
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    output = dict(
-        updated_at = now.strftime("%Y-%m-%d %H:%M"),
-        total      = len(final),
-        summary    = dict(rs90=rs90, rs70=rs70, sepa=sepa_n, rs_line_high=high_n),
-        stocks     = final,
-        sectors    = sectors,
-    )
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False, separators=(",", ":"))
-
-    size_kb = os.path.getsize(output_path) / 1024
-    print(f"""
-  ╔══════════════════════════════════════╗
-  ║        計算完成 ✅                   ║
-  ╠══════════════════════════════════════╣
-  ║  計算總數  ：{len(final):<5} 檔               ║
-  ║  RS ≥ 90  ：{rs90:<5} 檔               ║
-  ║  RS ≥ 70  ：{rs70:<5} 檔               ║
-  ║  SEPA 入選：{sepa_n:<5} 檔               ║
-  ║  RS線新高 ：{high_n:<5} 檔               ║
-  ║  🏆 最強  ：{top.get('code','')} {top.get('name',''):<8} RS {top.get('rs','')}    ║
-  ║  輸出檔案 ：{output_path:<28} ║
-  ║  檔案大小 ：{size_kb:.0f} KB                     ║
-  ╚══════════════════════════════════════╝
-""")
-
-
-def save_history(final: list[dict], now: datetime):
-    today = now.strftime("%Y-%m-%d")
-    history: dict = {}
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                history = json.load(f)
-        except Exception:
-            history = {}
-
-    for s in final:
-        if s["rs"] < HISTORY_MIN_RS:
-            continue
-        code = s["code"]
-        if code not in history:
-            history[code] = []
-        entries = history[code]
-        # 同一天只更新，不重複新增
-        if entries and entries[-1]["date"] == today:
-            entries[-1]["rs"] = s["rs"]
-        else:
-            entries.append({"date": today, "rs": s["rs"]})
-        # 只保留最近 N 天
-        history[code] = entries[-HISTORY_DAYS:]
-
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, separators=(",", ":"))
-    print(f"  ✓ 歷史記錄已更新：{HISTORY_FILE}（{len(history)} 支股票）")
-
-
-def backfill_history(bench: pd.Series, stock_list: list[dict], days: int = 180):
-    """用快取的價格資料回填過去 N 個交易日的 RS 歷史"""
-    print(f"\n▶ 歷史 RS 回填（過去 {days} 個交易日）...")
-
-    # 從快取收集所有股票的收盤價
-    all_closes: dict[str, pd.Series] = {}
-    for stock in stock_list:
-        code = stock["code"]
-        for suffix in [".TW", ".TWO"]:
-            ticker = f"{code}{suffix}"
-            with _cache_lock:
-                if ticker in _price_cache:
-                    all_closes[code] = _price_cache[ticker]
-                    break
-
-    print(f"  快取命中：{len(all_closes)} 支股票")
-
-    # 取基準指數過去 N 個交易日的日期
-    trade_dates = bench.index[-days:]
-    history: dict = {}
-
-    for i, date in enumerate(trade_dates):
-        date_str = date.strftime("%Y-%m-%d")
-        b_slice = bench.loc[:date]
-        if len(b_slice) < MIN_DAYS:
-            continue
-
-        # 對每支股票算 rs_raw
-        raw_list: list[tuple[str, float]] = []
-        for code, close in all_closes.items():
-            s_slice = close.loc[:date]
-            rs_data = calc_rs_raw(s_slice, b_slice)
-            if rs_data is not None:
-                raw_list.append((code, rs_data["rs_raw"]))
-
-        if not raw_list:
-            continue
-
-        # 百分位換算
-        codes = [x[0] for x in raw_list]
-        raws  = [x[1] for x in raw_list]
-        pcts  = raw_to_percentile(raws)
-
-        for code, rs in zip(codes, pcts):
-            if rs < HISTORY_MIN_RS:
-                continue
-            if code not in history:
-                history[code] = []
-            history[code].append({"date": date_str, "rs": rs})
-
-        if (i + 1) % 20 == 0 or i == len(trade_dates) - 1:
-            print(f"  {i + 1}/{len(trade_dates)} 日完成")
-
-    # 排序並寫入
-    for code in history:
-        history[code].sort(key=lambda x: x["date"])
-
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, separators=(",", ":"))
-
-    size_kb = os.path.getsize(HISTORY_FILE) / 1024
-    print(f"  ✓ 回填完成：{len(history)} 支股票 × {days} 天 → {HISTORY_FILE} ({size_kb:.0f} KB)")
-
-
-# ════════════════════════════════════════════════════════════════
-#  主程式
-# ════════════════════════════════════════════════════════════════
-def main():
+def main() -> None:
     args = parse_args()
     tw_tz = timezone(timedelta(hours=8))
-    now   = datetime.now(tw_tz)
+    now = datetime.now(tw_tz)
+    markets = normalize_market_list(args.markets)
 
-    print("=" * 62)
-    print("  台股全市場 Minervini RS 計算器")
-    print(f"  {now.strftime('%Y-%m-%d %H:%M')} (台灣時間)")
-    print("=" * 62)
+    print("=" * 72)
+    print("Taiwan + US Minervini RS Ranking")
+    print(now.strftime("%Y-%m-%d %H:%M Asia/Taipei"))
+    print("=" * 72)
 
-    print(f"\n▶ [0/4] 載入收盤價快取...")
-    load_price_cache()
+    universe = fetch_universe(args)
+    benchmarks = download_benchmarks(markets, args.period)
+    symbols = [stock.yf_symbol for stock in universe]
+    prices = download_prices(symbols, period=args.period, chunk_size=args.chunk_size)
+    results = process_results(universe, prices, benchmarks)
+    sectors = build_sector_flow(results)
+    write_output(results, sectors, now, args)
+    if args.backfill_history or history_needs_backfill():
+        history = build_backfilled_history(results, prices, benchmarks, args.history_days)
+        write_history(history)
+    else:
+        save_history(results, now)
 
-    bench  = load_benchmark()
-
-    print(f"\n▶ [2/4] 抓取上市公司清單...")
-    stocks = fetch_twse_listed()
-
-    raw_results = run_parallel(stocks, bench, args.workers, args.verbose)
-
-    save_price_cache()
-    print(f"  ✓ 快取已儲存：{len(_price_cache)} 支股票")
-
-    if not raw_results:
-        print("  ❌ 沒有任何成功結果，中止")
-        sys.exit(1)
-
-    print(f"\n▶ [4/4] 換算百分位、判定 SEPA...")
-    final   = finalize_results(raw_results)
-    sectors = build_sectors(final)
-    need_backfill = args.backfill or not os.path.exists(HISTORY_FILE)
-    write_output(final, sectors, now, args.output)
-    save_history(final, now)
-    if need_backfill:
-        backfill_history(bench, stocks, args.backfill_days)
+    top = results[0]
+    print("\nDone")
+    print(f"  Total: {len(results)}")
+    print(f"  RS>=70: {sum(1 for r in results if r['rs'] >= 70)}")
+    print(f"  SEPA: {sum(1 for r in results if r['sepa'])}")
+    print(f"  Top: {top['market_name']} {top['code']} {top['name']} RS {top['rs']}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted", file=sys.stderr)
+        raise SystemExit(130)

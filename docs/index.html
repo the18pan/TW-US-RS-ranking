@@ -1,215 +1,210 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RS Ranking — 台股全市場</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>台美股 RS Ranking</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-
-<nav>
-  <div class="nav-logo">📈 台股 RS Ranking</div>
-  <div class="nav-links">
-    <a href="#" class="active">RS Ranking</a>
-    <a href="#">選股清單</a>
-    <a href="#">回測工具</a>
-  </div>
-  <div class="nav-time"><span class="dot-live"></span>資料來源：yfinance · <span id="update-time"></span></div>
-  <div class="nav-visitors" id="nav-visitors" style="font-family:var(--font-num);font-size:11px;color:var(--text2);white-space:nowrap;display:flex;align-items:center;gap:5px;">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-    <span id="visitor-count">--</span>
-  </div>
-</nav>
-
-<div class="page-header">
-  <div class="page-title">
-    <span>📈 RS Ranking</span>
-    <div class="market-badge">台股全市場</div>
-  </div>
-  <div class="summary-cards">
-    <div class="scard">
-      <div class="scard-label">今日 RS≥70</div>
-      <div class="scard-val c-accent" id="cnt-70">—</div>
-      <div class="scard-sub">共 <span id="cnt-total">—</span> 檔</div>
+  <nav class="topbar">
+    <div class="brand">
+      <span class="brand-mark">RS</span>
+      <span>台美股 Ranking</span>
     </div>
-    <div class="scard">
-      <div class="scard-label">⭐ SEPA 入選</div>
-      <div class="scard-val c-gold" id="cnt-sepa">—</div>
-      <div class="scard-sub">RS≥70 + 技術面達標</div>
+    <div class="nav-links">
+      <button class="nav-link active" data-tab="ranking">Ranking</button>
+      <button class="nav-link" data-tab="sepa">SEPA</button>
+      <button class="nav-link" data-tab="sectors">板塊</button>
     </div>
-    <div class="scard">
-      <div class="scard-label">RS Line 創新高</div>
-      <div class="scard-val c-pos" id="cnt-high">—</div>
-      <div class="scard-sub">52 週新高訊號</div>
+    <div class="status-line">
+      <span class="live-dot"></span>
+      <span id="update-time">載入中</span>
     </div>
-    <div class="scard">
-      <div class="scard-label">最強族群</div>
-      <div class="scard-val" style="font-size:14px;font-weight:600" id="top-sector">—</div>
-      <div class="scard-sub">依平均 RS Score 排序</div>
+  </nav>
+
+  <main>
+    <section class="header-band">
+      <div class="title-row">
+        <div>
+          <h1>台股 + 美股 RS Ranking</h1>
+          <p>Minervini RS Score、RS Line 新高、SEPA 技術面條件，同一張表切換台股與美股。</p>
+        </div>
+        <div class="formula">Q1 50% · Q2 25% · Q3 15% · Q4 10%</div>
+      </div>
+
+      <div class="summary-grid">
+        <div class="metric">
+          <div class="metric-label">總檔數</div>
+          <div class="metric-value" id="cnt-total">--</div>
+          <div class="metric-sub" id="cnt-by-market">台股 -- · 美股 --</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">RS ≥ 70</div>
+          <div class="metric-value accent" id="cnt-rs70">--</div>
+          <div class="metric-sub">市場內百分位排名</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">SEPA 入選</div>
+          <div class="metric-value gold" id="cnt-sepa">--</div>
+          <div class="metric-sub">RS + 均線 + 52週位置</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">RS Line 新高</div>
+          <div class="metric-value green" id="cnt-high">--</div>
+          <div class="metric-sub">相對大盤強度創高</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="controls">
+      <div class="control-block">
+        <span class="control-label">市場</span>
+        <div class="segmented" id="market-filter">
+          <button class="seg active" data-market="all">全部</button>
+          <button class="seg" data-market="tw">台股</button>
+          <button class="seg" data-market="us">美股</button>
+        </div>
+      </div>
+      <div class="control-block">
+        <span class="control-label">市值</span>
+        <div class="segmented" id="cap-filter">
+          <button class="seg active" data-cap="all">全部</button>
+          <button class="seg" data-cap="L">大型</button>
+          <button class="seg" data-cap="M">中型</button>
+          <button class="seg" data-cap="S">小型</button>
+        </div>
+      </div>
+      <div class="control-block">
+        <span class="control-label">RS</span>
+        <div class="segmented" id="rs-filter">
+          <button class="seg active" data-rs="0">全部</button>
+          <button class="seg" data-rs="90">≥90</button>
+          <button class="seg" data-rs="80">≥80</button>
+          <button class="seg" data-rs="70">≥70</button>
+        </div>
+      </div>
+      <div class="control-block select-block">
+        <span class="control-label">板塊</span>
+        <select id="sector-filter">
+          <option value="all">全部板塊</option>
+        </select>
+      </div>
+      <div class="control-block search-block">
+        <span class="control-label">搜尋</span>
+        <input id="search-input" type="search" placeholder="代號 / 名稱 / 產業">
+      </div>
+      <button class="export-btn" id="export-btn">下載清單</button>
+    </section>
+
+    <section class="tab-panel active" id="tab-ranking">
+      <div class="table-meta">
+        <span id="result-count">--</span>
+        <span>點擊列可看 RS 歷史；點擊代號開 TradingView。</span>
+      </div>
+      <div class="table-wrap">
+        <table id="ranking-table">
+          <thead>
+            <tr>
+              <th class="right">#</th>
+              <th data-col="market">市場</th>
+              <th data-col="code">代號</th>
+              <th data-col="name">名稱</th>
+              <th data-col="rs" class="sorted">RS</th>
+              <th data-col="rs_global">Global</th>
+              <th data-col="rsHigh">RS Line</th>
+              <th data-col="price" class="right">收盤價</th>
+              <th data-col="q1" class="right">Q1</th>
+              <th data-col="q2" class="right">Q2</th>
+              <th data-col="q3" class="right">Q3</th>
+              <th data-col="q4" class="right">Q4</th>
+              <th data-col="c1" class="right">1日</th>
+              <th data-col="c5" class="right">5日</th>
+              <th data-col="c1m" class="right">1月</th>
+              <th data-col="cap">市值</th>
+              <th data-col="sector">板塊</th>
+            </tr>
+          </thead>
+          <tbody id="ranking-body"></tbody>
+        </table>
+      </div>
+      <div class="pagination" id="pagination"></div>
+    </section>
+
+    <section class="tab-panel" id="tab-sepa">
+      <div class="table-meta">
+        <span id="sepa-count">--</span>
+        <span>SEPA 條件採 RS≥70，且其餘均線與52週條件至少通過 4 項。</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="right">#</th>
+              <th>市場</th>
+              <th>代號</th>
+              <th>名稱</th>
+              <th>RS</th>
+              <th>Global</th>
+              <th class="right">Q1</th>
+              <th class="right">1月</th>
+              <th>SEPA 條件</th>
+              <th>板塊</th>
+            </tr>
+          </thead>
+          <tbody id="sepa-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-sectors">
+      <div class="table-meta">
+        <span id="sector-count">--</span>
+        <span>依各市場內板塊平均 RS 排序。</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="right">#</th>
+              <th>市場</th>
+              <th>板塊</th>
+              <th class="right">檔數</th>
+              <th class="right">平均 RS</th>
+              <th class="right">RS≥90</th>
+              <th class="right">RS≥70</th>
+              <th class="right">1日</th>
+              <th class="right">5日</th>
+              <th class="right">1月</th>
+            </tr>
+          </thead>
+          <tbody id="sector-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>資料來源：yfinance、TWSE、TPEx、NASDAQ。僅供研究與學習，不構成投資建議。</span>
+    <span id="schema-note"></span>
+  </footer>
+
+  <div class="modal-overlay" id="history-modal">
+    <div class="modal">
+      <button class="modal-close" id="modal-close">×</button>
+      <h2 id="modal-title"></h2>
+      <p id="modal-subtitle"></p>
+      <div class="history-box">
+        <canvas id="history-chart"></canvas>
+        <div id="history-empty" class="empty-state">尚無足夠歷史資料。</div>
+      </div>
     </div>
   </div>
-</div>
 
-<div class="tab-bar">
-  <button class="tab-btn active" data-tab="all">📊 全部 RS <span class="tab-count" id="tab-cnt-all">0</span></button>
-  <button class="tab-btn" data-tab="sepa">⭐ SEPA 入選 <span class="tab-count" id="tab-cnt-sepa">0</span></button>
-  <button class="tab-btn" data-tab="fund">🔬 精選個股分析</button>
-  <button class="tab-btn" data-tab="sector">📈 板塊資金流向</button>
-</div>
-
-<div class="controls">
-  <div class="ctrl-group">
-    <span class="ctrl-label">市值：</span>
-    <div class="pill-group" id="cap-filter">
-      <button class="pill active" data-cap="all">全部</button>
-      <button class="pill" data-cap="大">大 ≥1000億</button>
-      <button class="pill" data-cap="中">中 100億–1000億</button>
-      <button class="pill" data-cap="小">小 &lt;100億</button>
-    </div>
-  </div>
-  <div class="ctrl-sep"></div>
-  <div class="ctrl-group">
-    <span class="ctrl-label">板塊：</span>
-    <select class="ctrl-select" id="sector-filter">
-      <option value="all">全部板塊</option>
-    </select>
-  </div>
-  <div class="ctrl-sep"></div>
-  <div class="ctrl-group">
-    <span class="ctrl-label">RS評級：</span>
-    <div class="pill-group" id="rs-filter">
-      <button class="pill active" data-rs="0">全部</button>
-      <button class="pill" data-rs="90">≥90 ⭐</button>
-      <button class="pill" data-rs="80">≥80</button>
-      <button class="pill" data-rs="70">≥70</button>
-    </div>
-  </div>
-  <div class="ctrl-sep"></div>
-  <div class="ctrl-group">
-    <span class="ctrl-label">搜尋：</span>
-    <input type="text" id="search-input" placeholder="代號 / 名稱…" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:var(--radius);font-size:12px;font-family:var(--font-ui);outline:none;width:130px;" oninput="onSearch()">
-  </div>
-  <div class="result-count" id="result-count"></div>
-  <div class="pill" id="tv-export-btn" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;margin-left:8px;" onclick="exportTV()">
-    <span>📥 下載 RS≥</span>
-    <input id="rs-threshold" type="number" min="1" max="99" value="90"
-      style="width:32px;background:transparent;border:none;border-bottom:1px solid currentColor;color:inherit;font-size:inherit;font-family:var(--font-num);text-align:center;padding:0 1px;outline:none;cursor:text;"
-      onclick="event.stopPropagation()"
-      oninput="event.stopPropagation()">
-    <span>清單</span>
-  </div>
-</div>
-
-<!-- TAB: ALL RS -->
-<div class="tab-content active" id="tab-all">
-  <div class="table-wrap">
-    <table id="rs-table">
-      <thead>
-        <tr>
-          <th style="text-align:right">#</th>
-          <th class="col-delta" style="display:none;text-align:center;width:40px">△</th>
-          <th data-col="code">代號 <span class="sort-icon">↕</span></th>
-          <th data-col="name">名稱</th>
-          <th data-col="rs" class="sorted">RS Score <span class="sort-icon">↓</span></th>
-          <th data-col="rsHigh">RS Line</th>
-          <th data-col="price" style="text-align:right">收盤價 <span class="sort-icon">↕</span></th>
-          <th data-col="q1" style="text-align:right">Q1 <span class="sort-icon">↕</span></th>
-          <th data-col="q2" style="text-align:right">Q2 <span class="sort-icon">↕</span></th>
-          <th data-col="q3" style="text-align:right">Q3 <span class="sort-icon">↕</span></th>
-          <th data-col="q4" style="text-align:right">Q4 <span class="sort-icon">↕</span></th>
-          <th data-col="c1" style="text-align:right">1日 <span class="sort-icon">↕</span></th>
-          <th data-col="c5" style="text-align:right">5日 <span class="sort-icon">↕</span></th>
-          <th data-col="c1m" style="text-align:right">1月 <span class="sort-icon">↕</span></th>
-          <th>市值</th>
-          <th data-col="sector">板塊</th>
-        </tr>
-      </thead>
-      <tbody id="rs-tbody"></tbody>
-    </table>
-  </div>
-  <div class="pagination" id="pagination"></div>
-</div>
-
-<!-- TAB: SEPA -->
-<div class="tab-content" id="tab-sepa">
-  <div class="table-wrap">
-    <table id="sepa-table">
-      <thead>
-        <tr>
-          <th style="text-align:right">#</th>
-          <th>代號</th>
-          <th>名稱</th>
-          <th>RS Score</th>
-          <th>RS Line</th>
-          <th style="text-align:right">Q1</th>
-          <th style="text-align:right">Q2</th>
-          <th style="text-align:right">Q3</th>
-          <th style="text-align:right">Q4</th>
-          <th style="text-align:right">1日</th>
-          <th style="text-align:right">1月</th>
-          <th style="text-align:right">收盤價</th>
-          <th>SEPA 條件</th>
-          <th>板塊</th>
-        </tr>
-      </thead>
-      <tbody id="sepa-tbody"></tbody>
-    </table>
-  </div>
-</div>
-
-<!-- TAB: FUNDAMENTALS -->
-<div class="tab-content" id="tab-fund">
-  <div class="fund-grid" id="fund-grid"></div>
-</div>
-
-<!-- TAB: SECTOR FLOW -->
-<div class="tab-content" id="tab-sector">
-  <div class="sector-section">
-    <div class="section-title">
-      11 大板塊 — 資金流向排名
-      <span>（點擊列展開 12 週曲線圖）</span>
-    </div>
-    <div class="table-wrap" style="padding:0">
-      <table class="flow-table">
-        <thead>
-          <tr>
-            <th style="width:36px">#</th>
-            <th>板塊</th>
-            <th>資金流向</th>
-            <th>5日流向</th>
-            <th style="text-align:right">1日</th>
-            <th style="text-align:right">5日</th>
-            <th style="text-align:right">1月</th>
-          </tr>
-        </thead>
-        <tbody id="sector-tbody"></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<footer>
-  <span>資料來源：yfinance · Minervini RS 方法論</span>
-  <span>RS Score = Q1×50% + Q2×25% + Q3×15% + Q4×10% | 本頁面僅供學習參考，非投資建議</span>
-</footer>
-
-<!-- RS 歷史走勢 Modal -->
-<div class="modal-overlay" id="history-modal" onclick="closeHistoryModal(event)">
-  <div class="modal-box">
-    <button class="modal-close" onclick="closeHistoryModal()">✕</button>
-    <div class="modal-title" id="modal-title"></div>
-    <div class="modal-sub" id="modal-sub"></div>
-    <div style="position:relative;height:220px">
-      <canvas id="history-chart"></canvas>
-    </div>
-    <div class="modal-no-data" id="modal-no-data" style="display:none">尚無歷史資料（明日計算後開始累積）</div>
-  </div>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-<script src="app.js"></script>
-<script data-goatcounter="https://martin.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

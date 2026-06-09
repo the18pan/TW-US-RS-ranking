@@ -1,34 +1,59 @@
-name: 每日 RS 排行自動更新
+name: Daily Taiwan US RS Ranking
 
 on:
-  # 台股收盤後自動執行（UTC 08:35 = 台灣 16:35）
   schedule:
-    - cron: "35 8 * * 1-5"   # 週一至週五
-
-  # 推送到 master 自動觸發
+    # Taiwan time 17:05, Monday-Friday.
+    - cron: "5 9 * * 1-5"
   push:
     branches:
       - master
+      - main
     paths-ignore:
-      - '**.md'
-      - 'docs/**'
-
-  # 手動觸發（方便測試）
+      - "**.md"
+      - "docs/**"
   workflow_dispatch:
     inputs:
-      workers:
-        description: "並行執行緒數（預設 12）"
-        default: "12"
+      markets:
+        description: "Markets: tw,us / tw / us"
+        default: "tw,us"
         required: false
-      backfill:
-        description: "強制回填歷史 RS（true/false）"
+      tw_boards:
+        description: "Taiwan boards: listed,otc"
+        default: "listed,otc"
+        required: false
+      us_universe:
+        description: "US universe: all or sp500"
+        default: "all"
+        required: false
+      min_us_market_cap:
+        description: "Minimum US market cap in USD; 0 means no filter"
+        default: "0"
+        required: false
+      tw_limit:
+        description: "Taiwan symbol limit for testing; 0 means no limit"
+        default: "0"
+        required: false
+      us_limit:
+        description: "US symbol limit for testing; 0 means no limit"
+        default: "0"
+        required: false
+      backfill_history:
+        description: "Force rebuilding rs_history.json: true/false"
         default: "false"
+        required: false
+      history_days:
+        description: "Benchmark sessions to backfill"
+        default: "90"
         required: false
 
 permissions:
-  contents: write   # 允許 commit rs_data.json 回 repo
-  pages: write      # 允許部署 GitHub Pages
-  id-token: write   # 官方部署必要
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   calculate-and-deploy:
@@ -38,88 +63,63 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      # ── 1. Checkout ──────────────────────────────────────────
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. 設定 Python ───────────────────────────────────────
-      - name: Set up Python 3.12
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
-      # ── 3. 安裝套件 ──────────────────────────────────────────
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 3.5. 還原收盤價快取 ──────────────────────────────────
-      - name: Restore price cache
-        uses: actions/cache@v4
-        with:
-          path: price_cache.pkl
-          key: price-cache-${{ runner.os }}-${{ github.run_number }}
-          restore-keys: |
-            price-cache-${{ runner.os }}-
-
-      # ── 3.7. 檢查今日資料是否已存在（push 觸發才檢查）────────
-      - name: Check if today's data exists
-        id: check_date
-        run: |
-          TODAY=$(TZ=Asia/Taipei date '+%Y-%m-%d')
-          NOW_HOUR=$(TZ=Asia/Taipei date '+%H')
-          LAST=$(python3 -c "import json; print(json.load(open('docs/rs_data.json')).get('updated_at','')[:10])" 2>/dev/null || echo "none")
-          LAST_HOUR=$(python3 -c "import json; t=json.load(open('docs/rs_data.json')).get('updated_at','00:00'); print(t[11:13])" 2>/dev/null || echo "0")
-          echo "today=$TODAY  last=$LAST  last_hour=$LAST_HOUR  now_hour=$NOW_HOUR  event=${{ github.event_name }}"
-          # push 觸發：當天已有收盤後資料（14:00 以後）才跳過
-          if [ "$LAST" = "$TODAY" ] && [ "$LAST_HOUR" -ge "14" ] && [ "${{ github.event_name }}" = "push" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "今日收盤後資料已存在，跳過計算"
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-
-      # ── 4. 執行 RS 計算 ───────────────────────────────────────
       - name: Run RS calculator
-        if: steps.check_date.outputs.skip != 'true'
         run: |
-          WORKERS=${{ github.event.inputs.workers || '12' }}
-          BACKFILL=${{ github.event.inputs.backfill || 'false' }}
+          MARKETS="${{ github.event.inputs.markets || 'tw,us' }}"
+          TW_BOARDS="${{ github.event.inputs.tw_boards || 'listed,otc' }}"
+          US_UNIVERSE="${{ github.event.inputs.us_universe || 'all' }}"
+          MIN_US_MARKET_CAP="${{ github.event.inputs.min_us_market_cap || '0' }}"
+          TW_LIMIT="${{ github.event.inputs.tw_limit || '0' }}"
+          US_LIMIT="${{ github.event.inputs.us_limit || '0' }}"
+          BACKFILL_HISTORY="${{ github.event.inputs.backfill_history || 'false' }}"
+          HISTORY_DAYS="${{ github.event.inputs.history_days || '90' }}"
           EXTRA=""
-          [ "$BACKFILL" = "true" ] && EXTRA="--backfill"
-          python rs_calculator.py --workers $WORKERS $EXTRA
+          [ "$BACKFILL_HISTORY" = "true" ] && EXTRA="--backfill-history"
+
+          python rs_calculator.py \
+            --markets "$MARKETS" \
+            --tw-boards "$TW_BOARDS" \
+            --us-universe "$US_UNIVERSE" \
+            --min-us-market-cap "$MIN_US_MARKET_CAP" \
+            --tw-limit "$TW_LIMIT" \
+            --us-limit "$US_LIMIT" \
+            --history-days "$HISTORY_DAYS" \
+            $EXTRA
         env:
           PYTHONUNBUFFERED: "1"
 
-      # ── 5. Commit & Push rs_data.json ─────────────────────────
       - name: Commit updated data
-        if: steps.check_date.outputs.skip != 'true'
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          cp docs/rs_data.json /tmp/rs_data_new.json
-          cp docs/rs_history.json /tmp/rs_history_new.json 2>/dev/null || true
-          git fetch origin master
-          git reset --hard origin/master
-          cp /tmp/rs_data_new.json docs/rs_data.json
-          cp /tmp/rs_history_new.json docs/rs_history.json 2>/dev/null || true
           git add docs/rs_data.json docs/rs_history.json
-          # 只有資料有變動才 commit
-          git diff --staged --quiet || \
-            git commit -m "🤖 RS 排行更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
-          for i in 1 2 3; do
-            git push && break
-            echo "push 失敗，第 $i 次重試..."
-            sleep 10
-          done
+          if git diff --staged --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "Update Taiwan US RS data $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+            git push
+          fi
 
-      # ── 6. 上傳 Pages Artifact ────────────────────────────────
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./docs
 
-      # ── 7. Deploy GitHub Pages（官方方式）────────────────────
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

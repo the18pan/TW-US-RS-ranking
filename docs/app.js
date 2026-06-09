@@ -1,575 +1,647 @@
-// ── DATA ──────────────────────────────────────────────────────
 let stocks = [];
-let sectorFlowData = [];
-let rsHistory = {};
+let sectors = [];
+let historyData = {};
 let historyChart = null;
 
-const SEPA_LABELS = {
-  rs70:         'RS≥70',
-  above_150ma:  '站上150MA',
-  above_200ma:  '站上200MA',
-  ma200_up:     '200MA向上',
-  ma150_gt_200: '150MA>200MA',
-  near_52w_high:'靠近52週高點',
-};
-
-async function fetchData() {
-  try {
-    const [dataRes, histRes] = await Promise.all([
-      fetch('rs_data.json?t=' + Date.now()),
-      fetch('rs_history.json?t=' + Date.now()).catch(() => ({ ok: false })),
-    ]);
-    if (!dataRes.ok) throw new Error('HTTP ' + dataRes.status);
-    const data = await dataRes.json();
-    stocks = data.stocks || [];
-    sectorFlowData = (data.sectors || []).map(s => ({
-      name: s.name, c1: s.c1 ?? 0, c5: s.c5 ?? 0, c1m: s.c1m ?? 0,
-      flow: s.flow ?? (s.avg_rs * 1.1), flow5: s.flow5 ?? 0,
-      weeks: s.weeks || [],
-    }));
-    rsHistory = histRes.ok ? await histRes.json() : {};
-    return { updatedAt: data.updated_at, live: true };
-  } catch (e) {
-    console.warn('rs_data.json 未找到，使用示意資料。請執行 rs_calculator.py', e.message);
-    stocks = DEMO_STOCKS;
-    sectorFlowData = DEMO_SECTORS;
-    return { updatedAt: null, live: false };
-  }
-}
-
-// ── 示意資料（fallback） ───────────────────────────────────────
-const DEMO_STOCKS = [
-  {code:"3661",name:"世芯-KY",  sector:"AI晶片/封裝", rs:94, q1:45.2,q2:28.3,q3:12.1,q4:8.4,  rsHigh:true, sepa:true,  cap:"中", c1:3.2,  c5:8.4,  c1m:22.1},
-  {code:"3324",name:"雙鴻",     sector:"散熱/液冷",   rs:91, q1:38.4,q2:22.1,q3:15.3,q4:5.2,  rsHigh:true, sepa:true,  cap:"中", c1:2.8,  c5:6.2,  c1m:18.4},
-  {code:"5388",name:"中磊",     sector:"網通設備",    rs:89, q1:35.1,q2:18.4,q3:10.2,q4:12.3, rsHigh:true, sepa:true,  cap:"中", c1:1.9,  c5:5.8,  c1m:15.7},
-  {code:"2382",name:"廣達",     sector:"AI伺服器",    rs:87, q1:32.2,q2:19.8,q3:8.4, q4:14.7, rsHigh:true, sepa:true,  cap:"大", c1:1.4,  c5:4.1,  c1m:14.2},
-  {code:"3017",name:"奇鋐",     sector:"散熱/液冷",   rs:85, q1:30.5,q2:16.2,q3:11.4,q4:7.8,  rsHigh:true, sepa:true,  cap:"中", c1:2.1,  c5:5.4,  c1m:13.8},
-  {code:"2314",name:"台揚",     sector:"衛星通訊",    rs:83, q1:28.8,q2:15.4,q3:9.2, q4:6.5,  rsHigh:true, sepa:false, cap:"小", c1:1.6,  c5:4.8,  c1m:12.5},
-  {code:"2330",name:"台積電",   sector:"晶圓代工",    rs:81, q1:25.4,q2:18.2,q3:12.4,q4:9.1,  rsHigh:true, sepa:true,  cap:"大", c1:1.2,  c5:3.8,  c1m:11.4},
-  {code:"3048",name:"健策",     sector:"散熱/液冷",   rs:80, q1:24.8,q2:14.1,q3:8.9, q4:5.4,  rsHigh:false,sepa:false, cap:"小", c1:1.5,  c5:3.2,  c1m:10.8},
-  {code:"2308",name:"台達電",   sector:"資料中心",    rs:78, q1:22.1,q2:13.8,q3:9.4, q4:7.2,  rsHigh:false,sepa:true,  cap:"大", c1:0.8,  c5:2.9,  c1m:9.6},
-  {code:"2345",name:"智邦",     sector:"網通設備",    rs:77, q1:20.5,q2:14.2,q3:8.1, q4:6.8,  rsHigh:false,sepa:false, cap:"中", c1:1.1,  c5:2.4,  c1m:9.2},
-  {code:"3231",name:"緯創",     sector:"AI伺服器",    rs:75, q1:19.8,q2:12.4,q3:7.2, q4:8.4,  rsHigh:false,sepa:false, cap:"大", c1:0.9,  c5:2.1,  c1m:8.4},
-  {code:"3443",name:"創意",     sector:"AI晶片/封裝", rs:74, q1:18.4,q2:11.8,q3:6.8, q4:5.2,  rsHigh:false,sepa:false, cap:"中", c1:0.7,  c5:1.8,  c1m:7.9},
-  {code:"2454",name:"聯發科",   sector:"IC設計",      rs:72, q1:17.2,q2:10.4,q3:7.4, q4:6.1,  rsHigh:false,sepa:false, cap:"大", c1:0.5,  c5:1.5,  c1m:7.2},
-  {code:"2356",name:"英業達",   sector:"AI伺服器",    rs:70, q1:16.8,q2:9.8, q3:6.2, q4:5.8,  rsHigh:false,sepa:false, cap:"大", c1:0.4,  c5:1.2,  c1m:6.8},
-  {code:"5425",name:"台半",     sector:"功率元件",    rs:68, q1:14.2,q2:8.4, q3:5.8, q4:4.2,  rsHigh:false,sepa:false, cap:"小", c1:0.3,  c5:0.8,  c1m:5.4},
-  {code:"2421",name:"建準",     sector:"散熱/液冷",   rs:65, q1:12.8,q2:7.2, q3:4.8, q4:3.8,  rsHigh:false,sepa:false, cap:"中", c1:0.2,  c5:0.6,  c1m:4.8},
-  {code:"6196",name:"帆宣",     sector:"半導體設備",  rs:63, q1:11.4,q2:6.8, q3:4.2, q4:3.4,  rsHigh:false,sepa:false, cap:"小", c1:0.1,  c5:0.4,  c1m:4.2},
-  {code:"3704",name:"合勤控",   sector:"網通設備",    rs:62, q1:10.8,q2:6.2, q3:3.8, q4:3.1,  rsHigh:false,sepa:false, cap:"中", c1:-0.2, c5:0.2,  c1m:3.8},
-  {code:"2317",name:"鴻海",     sector:"AI伺服器",    rs:60, q1:9.8, q2:5.8, q3:3.4, q4:4.2,  rsHigh:false,sepa:false, cap:"大", c1:-0.3, c5:-0.1, c1m:3.4},
-  {code:"2481",name:"強茂",     sector:"功率元件",    rs:58, q1:8.4, q2:5.2, q3:3.1, q4:2.8,  rsHigh:false,sepa:false, cap:"小", c1:-0.5, c5:-0.4, c1m:2.8},
-  {code:"2379",name:"瑞昱",     sector:"IC設計",      rs:56, q1:7.2, q2:4.8, q3:2.8, q4:3.4,  rsHigh:false,sepa:false, cap:"大", c1:-0.8, c5:-0.8, c1m:2.2},
-  {code:"3034",name:"聯詠",     sector:"IC設計",      rs:54, q1:6.8, q2:4.2, q3:2.4, q4:2.8,  rsHigh:false,sepa:false, cap:"大", c1:-0.9, c5:-1.2, c1m:1.8},
-  {code:"2049",name:"上銀",     sector:"工業機器人",  rs:52, q1:6.2, q2:3.8, q3:2.1, q4:2.2,  rsHigh:false,sepa:false, cap:"中", c1:-1.1, c5:-1.4, c1m:1.2},
-  {code:"3711",name:"日月光",   sector:"AI晶片/封裝", rs:50, q1:5.8, q2:3.4, q3:1.8, q4:2.1,  rsHigh:false,sepa:false, cap:"大", c1:-1.2, c5:-1.8, c1m:0.8},
-  {code:"5299",name:"杰力",     sector:"功率元件",    rs:48, q1:4.8, q2:2.8, q3:1.4, q4:1.8,  rsHigh:false,sepa:false, cap:"小", c1:-1.4, c5:-2.1, c1m:-0.4},
-  {code:"2303",name:"聯電",     sector:"晶圓代工",    rs:45, q1:3.8, q2:2.2, q3:1.1, q4:1.4,  rsHigh:false,sepa:false, cap:"大", c1:-1.6, c5:-2.4, c1m:-1.2},
-  {code:"3131",name:"弘塑",     sector:"半導體設備",  rs:43, q1:3.2, q2:1.8, q3:0.8, q4:1.2,  rsHigh:false,sepa:false, cap:"小", c1:-1.8, c5:-2.8, c1m:-2.1},
-  {code:"2360",name:"致茂",     sector:"資料中心",    rs:42, q1:2.8, q2:1.4, q3:0.4, q4:0.8,  rsHigh:false,sepa:false, cap:"中", c1:-1.9, c5:-3.1, c1m:-2.4},
-  {code:"5347",name:"世界先進", sector:"晶圓代工",    rs:38, q1:1.8, q2:0.8, q3:-0.4,q4:0.4,  rsHigh:false,sepa:false, cap:"大", c1:-2.1, c5:-3.4, c1m:-3.8},
-  {code:"3583",name:"辛耘",     sector:"半導體設備",  rs:35, q1:0.8, q2:-0.4,q3:-1.2,q4:0.2,  rsHigh:false,sepa:false, cap:"小", c1:-2.4, c5:-3.8, c1m:-4.2},
-  {code:"2449",name:"京元電",   sector:"AI晶片/封裝", rs:32, q1:-0.4,q2:-1.2,q3:-1.8,q4:-0.4, rsHigh:false,sepa:false, cap:"中", c1:-2.6, c5:-4.2, c1m:-5.1},
-  {code:"8150",name:"南茂",     sector:"AI晶片/封裝", rs:28, q1:-2.1,q2:-2.4,q3:-2.8,q4:-1.2, rsHigh:false,sepa:false, cap:"小", c1:-3.1, c5:-5.1, c1m:-6.8},
-  {code:"3406",name:"玉晶光",   sector:"車用電子",    rs:25, q1:-3.8,q2:-3.1,q3:-2.4,q4:-1.8, rsHigh:false,sepa:false, cap:"小", c1:-3.4, c5:-5.8, c1m:-8.4},
-  {code:"3008",name:"大立光",   sector:"車用電子",    rs:22, q1:-4.8,q2:-3.8,q3:-2.8,q4:-2.1, rsHigh:false,sepa:false, cap:"大", c1:-3.8, c5:-6.2, c1m:-9.8},
-  {code:"9958",name:"世紀鋼",   sector:"風電",        rs:18, q1:-6.2,q2:-4.8,q3:-3.4,q4:-2.8, rsHigh:false,sepa:false, cap:"中", c1:-4.1, c5:-7.4, c1m:-11.4},
-  {code:"6443",name:"元晶",     sector:"太陽能",      rs:15, q1:-7.8,q2:-5.8,q3:-4.2,q4:-3.1, rsHigh:false,sepa:false, cap:"小", c1:-4.4, c5:-8.1, c1m:-13.2},
-  {code:"2208",name:"台船",     sector:"風電",        rs:12, q1:-9.4,q2:-6.8,q3:-4.8,q4:-3.8, rsHigh:false,sepa:false, cap:"中", c1:-4.8, c5:-8.8, c1m:-14.8},
-  {code:"6244",name:"茂迪",     sector:"太陽能",      rs:8,  q1:-12.1,q2:-8.4,q3:-5.8,q4:-4.2,rsHigh:false,sepa:false, cap:"小", c1:-5.2, c5:-9.8, c1m:-16.4, sepa_detail:{rs70:false,above_150ma:false,above_200ma:false,ma200_up:false,ma150_gt_200:false,near_52w_high:false}},
-];
-
-const DEMO_SECTORS = [
-  {name:"AI伺服器",   c1:1.42, c5:3.84, c1m:11.4, flow:88.4, flow5:284.2, weeks:[62,68,71,74,70,78,82,79,84,88,85,88]},
-  {name:"散熱/液冷",  c1:1.88, c5:4.28, c1m:12.8, flow:82.1, flow5:248.6, weeks:[58,62,65,71,68,74,76,79,80,82,84,82]},
-  {name:"網通設備",   c1:1.24, c5:3.12, c1m:9.8,  flow:74.8, flow5:192.4, weeks:[55,58,60,64,62,66,70,71,73,75,76,75]},
-  {name:"AI晶片/封裝",c1:0.84, c5:2.48, c1m:7.2,  flow:68.4, flow5:168.2, weeks:[60,64,66,68,65,70,71,72,70,68,69,68]},
-  {name:"晶圓代工",   c1:0.42, c5:1.84, c1m:5.8,  flow:58.2, flow5:142.8, weeks:[55,57,58,60,58,62,62,63,61,59,60,58]},
-  {name:"IC設計",     c1:0.12, c5:0.84, c1m:3.4,  flow:48.4, flow5:98.4,  weeks:[50,51,52,54,53,55,55,56,54,52,53,48]},
-  {name:"資料中心",   c1:-0.24,c5:-0.48,c1m:2.1,  flow:42.8, flow5:84.2,  weeks:[48,49,48,50,49,51,50,48,47,45,44,43]},
-  {name:"功率元件",   c1:-0.84,c5:-1.84,c1m:-0.8, flow:28.4, flow5:48.2,  weeks:[45,44,43,44,42,43,42,40,39,38,37,28]},
-  {name:"車用電子",   c1:-1.84,c5:-3.24,c1m:-5.4, flow:18.2, flow5:-42.8, weeks:[40,38,36,35,33,32,30,28,26,24,22,18]},
-  {name:"風電",       c1:-2.84,c5:-5.48,c1m:-9.8, flow:8.4,  flow5:-128.4,weeks:[35,32,28,25,22,20,18,16,14,12,10,8]},
-  {name:"太陽能",     c1:-3.84,c5:-7.28,c1m:-13.2,flow:4.2,  flow5:-184.8,weeks:[30,26,22,18,16,14,12,10,9,8,6,4]},
-];
-
-// ── HELPERS ──────────────────────────────────────────────────
-function pct(v) {
-  const s = v > 0 ? '+' : '';
-  return `<span class="${v>0?'pos':v<0?'neg':'neu'}">${s}${v.toFixed(1)}%</span>`;
-}
-function rsColor(rs) {
-  if (rs >= 90) return 'var(--rs90)';
-  if (rs >= 80) return 'var(--rs80)';
-  if (rs >= 70) return '#86efac';
-  if (rs >= 50) return 'var(--rs50)';
-  if (rs >= 30) return 'var(--rs30)';
-  return 'var(--rs0)';
-}
-function rsBarColor(rs) {
-  if (rs >= 90) return '#00ff88';
-  if (rs >= 80) return '#10b981';
-  if (rs >= 70) return '#86efac';
-  if (rs >= 50) return '#64748b';
-  if (rs >= 30) return '#f97316';
-  return '#f43f5e';
-}
-function capBadge(cap) {
-  return `<span class="cap-badge cap-${cap}">${cap}</span>`;
-}
-function tvLink(code) {
-  return `https://www.tradingview.com/chart/?symbol=TWSE:${code}&interval=D`;
-}
-function makeSvgSparkline(data, w, h) {
-  const min = Math.min(...data), max = Math.max(...data);
-  const range = max - min || 1;
-  const pts = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * w;
-    const y = h - ((v - min) / range) * h;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const last = data[data.length-1], prev = data[data.length-2];
-  const color = last >= prev ? '#10b981' : '#f43f5e';
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="display:block">
-    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/>
-  </svg>`;
-}
-
-function computePrevRankMap() {
-  let latestDate = '';
-  for (const entries of Object.values(rsHistory)) {
-    if (entries.length && entries[entries.length - 1].date > latestDate) {
-      latestDate = entries[entries.length - 1].date;
-    }
-  }
-  if (!latestDate) return new Map();
-  const prevRS = [];
-  for (const [code, entries] of Object.entries(rsHistory)) {
-    const prev = [...entries].reverse().find(e => e.date < latestDate);
-    if (prev) prevRS.push({ code, rs: prev.rs });
-  }
-  prevRS.sort((a, b) => b.rs - a.rs);
-  return new Map(prevRS.map((s, i) => [s.code, i + 1]));
-}
-
-function rankDelta(curr, prev) {
-  if (prev == null) return `<span style="font-size:10px;color:var(--accent);font-family:var(--font-num)">NEW</span>`;
-  const d = prev - curr;
-  if (d === 0) return `<span style="color:var(--text3);font-family:var(--font-num);font-size:11px">—</span>`;
-  const color = d > 0 ? 'var(--pos)' : 'var(--neg)';
-  return `<span style="color:${color};font-family:var(--font-num);font-size:11px">${d > 0 ? '▲' : '▼'}${Math.abs(d)}</span>`;
-}
-
-// ── STATE ─────────────────────────────────────────────────────
-let sortCol = 'rs', sortDir = -1;
-let filterCap = 'all', filterSector = 'all', filterRS = 0, searchQuery = '';
+let activeTab = "ranking";
+let marketFilter = "all";
+let capFilter = "all";
+let rsFilter = 0;
+let sectorFilter = "all";
+let searchQuery = "";
+let sortCol = "rs";
+let sortDir = -1;
 let page = 1;
-const PER_PAGE = 20;
 
-// ── INIT ─────────────────────────────────────────────────────
-async function init() {
-  document.getElementById('update-time').textContent = '載入中…';
-  const { updatedAt, live } = await fetchData();
-  const timeEl = document.getElementById('update-time');
-  if (live && updatedAt) {
-    timeEl.innerHTML = `<span style="color:var(--pos)">●</span> ${updatedAt} 即時資料`;
-  } else {
-    timeEl.innerHTML = `<span style="color:var(--text3)">○</span> 示意資料 · <span style="color:var(--neg)">請執行 rs_calculator.py</span>`;
-  }
+const PER_PAGE = 30;
 
-  const sectors = [...new Set(stocks.map(s => s.sector))].sort();
-  const sel = document.getElementById('sector-filter');
-  sectors.forEach(sc => {
-    const o = document.createElement('option');
-    o.value = sc; o.textContent = sc; sel.appendChild(o);
-  });
-
-  const rs70 = stocks.filter(s => s.rs >= 70).length;
-  const sepaCount = stocks.filter(s => s.sepa).length;
-  const highCount = stocks.filter(s => s.rsHigh).length;
-  document.getElementById('cnt-70').textContent = rs70;
-  document.getElementById('cnt-total').textContent = stocks.length;
-  document.getElementById('cnt-sepa').textContent = sepaCount;
-  document.getElementById('cnt-high').textContent = highCount;
-  document.getElementById('tab-cnt-all').textContent = stocks.length;
-  document.getElementById('tab-cnt-sepa').textContent = sepaCount;
-
-  const sectorRS = {};
-  stocks.forEach(s => {
-    if (!sectorRS[s.sector]) sectorRS[s.sector] = [];
-    sectorRS[s.sector].push(s.rs);
-  });
-  let topSector = '', topAvg = 0;
-  Object.entries(sectorRS).forEach(([sc, arr]) => {
-    const avg = arr.reduce((a,b)=>a+b,0)/arr.length;
-    if (avg > topAvg) { topAvg = avg; topSector = sc; }
-  });
-  document.getElementById('top-sector').textContent = topSector;
-
-  renderTable(); renderSEPA(); renderFund(); renderSectorFlow();
-  bindEvents();
-}
-
-function getFiltered() {
-  const q = searchQuery.toLowerCase();
-  return stocks.filter(s => {
-    if (filterCap !== 'all' && s.cap !== filterCap) return false;
-    if (filterSector !== 'all' && s.sector !== filterSector) return false;
-    if (s.rs < filterRS) return false;
-    if (q && !s.code.toLowerCase().includes(q) && !s.name.toLowerCase().includes(q)) return false;
-    return true;
-  }).sort((a, b) => {
-    const av = a[sortCol], bv = b[sortCol];
-    if (typeof av === 'boolean') return (bv - av) * sortDir * -1;
-    return (av - bv) * sortDir;
-  });
-}
-
-function renderTable() {
-  const data = getFiltered();
-  const total = data.length;
-  const pages = Math.ceil(total / PER_PAGE);
-  if (page > pages) page = 1;
-  const slice = data.slice((page-1)*PER_PAGE, page*PER_PAGE);
-
-  document.getElementById('result-count').textContent = `共 ${total} 檔`;
-
-  const allByRS = [...stocks].sort((a,b) => b.rs - a.rs);
-  const rankMap = new Map(allByRS.map((s, i) => [s.code, i + 1]));
-  const prevRankMap = computePrevRankMap();
-  const showDelta = prevRankMap.size > 0;
-  document.querySelector('th.col-delta').style.display = showDelta ? '' : 'none';
-
-  const tbody = document.getElementById('rs-tbody');
-  tbody.innerHTML = slice.map((s) => {
-    const rank = rankMap.get(s.code);
-    return `<tr class="tr-clickable" onclick="showHistory('${s.code}','${s.name}')">
-      <td class="td-rank">${rank}</td>
-      ${showDelta ? `<td class="td-rank" style="width:40px;text-align:center">${rankDelta(rank, prevRankMap.get(s.code))}</td>` : ''}
-      <td class="td-code"><a href="${tvLink(s.code)}" target="_blank" onclick="event.stopPropagation()">${s.code}</a></td>
-      <td class="td-name">${s.name}${s.sepa?` <span class="sepa-badge">SEPA</span>`:''}</td>
-      <td class="td-num rs-cell">
-        <div class="rs-wrap">
-          <div class="rs-bar-bg"><div class="rs-bar" style="width:${s.rs}%;background:${rsBarColor(s.rs)}"></div></div>
-          <span class="rs-num" style="color:${rsColor(s.rs)}">${s.rs}</span>
-        </div>
-      </td>
-      <td style="text-align:center">${s.rsHigh?`<span class="tag-high">◆ 52W新高</span>`:`<span class="tag-dash">—</span>`}</td>
-      <td class="td-num" style="color:var(--text)">${s.price != null ? s.price.toFixed(2) : '—'}</td>
-      <td class="td-num">${pct(s.q1)}</td>
-      <td class="td-num">${pct(s.q2)}</td>
-      <td class="td-num">${pct(s.q3)}</td>
-      <td class="td-num">${pct(s.q4)}</td>
-      <td class="td-num">${pct(s.c1)}</td>
-      <td class="td-num">${pct(s.c5)}</td>
-      <td class="td-num">${pct(s.c1m)}</td>
-      <td>${capBadge(s.cap)}</td>
-      <td class="td-sector">${s.sector}</td>
-    </tr>`;
-  }).join('');
-
-  const pg = document.getElementById('pagination');
-  pg.innerHTML = '';
-  const addBtn = (label, targetPage, disabled, active) => {
-    const b = document.createElement('button');
-    b.className = 'page-btn' + (active?' active':'');
-    b.textContent = label;
-    b.disabled = disabled;
-    if (!disabled) b.onclick = () => { page = targetPage; renderTable(); };
-    pg.appendChild(b);
-  };
-  addBtn('«', 1, page===1, false);
-  addBtn('‹', page-1, page===1, false);
-  for (let p = Math.max(1,page-2); p <= Math.min(pages,page+2); p++) {
-    addBtn(p, p, false, p===page);
-  }
-  addBtn('›', page+1, page===pages||pages===0, false);
-  addBtn('»', pages, page===pages||pages===0, false);
-}
-
-function renderSEPA() {
-  const sepa = stocks.filter(s => s.sepa).sort((a,b) => b.rs - a.rs);
-  const tbody = document.getElementById('sepa-tbody');
-  tbody.innerHTML = sepa.map((s, i) => {
-    const detail = s.sepa_detail || {};
-    const crits = Object.entries(SEPA_LABELS).map(([key, label]) => {
-      const pass = detail[key] ?? false;
-      return `<span class="crit ${pass?'crit-pass':'crit-fail'}">${pass?'✓':'✗'} ${label}</span>`;
-    }).join('');
-    return `<tr>
-      <td class="td-rank">${i+1}</td>
-      <td class="td-code"><a href="${tvLink(s.code)}" target="_blank">${s.code}</a></td>
-      <td class="td-name">${s.name}</td>
-      <td class="td-num rs-cell">
-        <div class="rs-wrap">
-          <div class="rs-bar-bg"><div class="rs-bar" style="width:${s.rs}%;background:${rsBarColor(s.rs)}"></div></div>
-          <span class="rs-num" style="color:${rsColor(s.rs)}">${s.rs}</span>
-        </div>
-      </td>
-      <td style="text-align:center">${s.rsHigh?`<span class="tag-high">◆ 52W新高</span>`:`<span class="tag-dash">—</span>`}</td>
-      <td class="td-num">${pct(s.q1)}</td>
-      <td class="td-num">${pct(s.q2)}</td>
-      <td class="td-num">${pct(s.q3)}</td>
-      <td class="td-num">${pct(s.q4)}</td>
-      <td class="td-num">${pct(s.c1)}</td>
-      <td class="td-num">${pct(s.c1m)}</td>
-      <td class="td-num" style="color:var(--text)">${s.price != null ? s.price.toFixed(2) : '—'}</td>
-      <td style="max-width:300px">${crits}</td>
-      <td class="td-sector">${s.sector}</td>
-    </tr>`;
-  }).join('');
-}
-
-function renderFund() {
-  const sepa = stocks.filter(s => s.sepa).sort((a,b) => b.rs - a.rs);
-  const grid = document.getElementById('fund-grid');
-  grid.innerHTML = sepa.map(s => {
-    const detail = s.sepa_detail || {};
-    const crits = Object.entries(SEPA_LABELS).map(([key, label]) => {
-      const pass = detail[key] ?? false;
-      return `<span class="crit ${pass?'crit-pass':'crit-fail'}">${pass?'✓':'✗'} ${label}</span>`;
-    }).join('');
-    return `<div class="fund-card">
-      <div class="fund-header">
-        <div>
-          <div class="fund-code"><a href="${tvLink(s.code)}" target="_blank" style="color:inherit;text-decoration:none">${s.code}</a></div>
-          <div class="fund-name">${s.name} · ${s.sector}</div>
-        </div>
-        <div class="fund-rs">
-          <div class="fund-rs-num" style="color:${rsColor(s.rs)}">${s.rs}</div>
-          <div class="fund-rs-label">RS Score</div>
-        </div>
-      </div>
-      <div class="fund-criteria">${crits}</div>
-      <div class="fund-stats">
-        <div class="fund-stat"><div class="fund-stat-label">Q1</div><div class="fund-stat-val ${s.q1>0?'c-pos':'c-neg'}">${s.q1>0?'+':''}${s.q1.toFixed(1)}%</div></div>
-        <div class="fund-stat"><div class="fund-stat-label">1日</div><div class="fund-stat-val ${s.c1>0?'c-pos':'c-neg'}">${s.c1>0?'+':''}${s.c1.toFixed(1)}%</div></div>
-        <div class="fund-stat"><div class="fund-stat-label">1月</div><div class="fund-stat-val ${s.c1m>0?'c-pos':'c-neg'}">${s.c1m>0?'+':''}${s.c1m.toFixed(1)}%</div></div>
-        <div class="fund-stat"><div class="fund-stat-label">市值</div><div class="fund-stat-val">${s.cap}</div></div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function renderSectorFlow() {
-  const sorted = [...sectorFlowData].sort((a,b) => b.flow - a.flow);
-  const maxFlow = sorted[0].flow;
-  const tbody = document.getElementById('sector-tbody');
-  tbody.innerHTML = sorted.map((sf, i) => {
-    const barW = Math.abs(sf.flow / maxFlow * 100).toFixed(1);
-    const barColor = sf.c1 >= 0 ? 'var(--pos)' : 'var(--neg)';
-    const flow5Color = sf.flow5 >= 0 ? 'var(--pos)' : 'var(--neg)';
-    const flow5W = Math.abs(sf.flow5 / 300 * 100).toFixed(1);
-    return `<tr class="sector-row" data-idx="${i}">
-      <td class="td-rank">${i+1}</td>
-      <td style="font-weight:500">${sf.name}</td>
-      <td>
-        <div class="flow-bar-wrap">
-          <div class="flow-bar-bg"><div class="flow-bar" style="width:${barW}%;background:${barColor}"></div></div>
-          <span class="flow-num" style="color:${barColor}">${sf.flow.toFixed(1)}</span>
-        </div>
-      </td>
-      <td>
-        <div class="flow-bar-wrap">
-          <div class="flow-bar-bg"><div class="flow-bar" style="width:${Math.min(flow5W,100)}%;background:${flow5Color}"></div></div>
-          <span class="flow-num" style="color:${flow5Color}">${sf.flow5 > 0 ? '+' : ''}${sf.flow5.toFixed(0)}</span>
-        </div>
-      </td>
-      <td class="td-num">${pct(sf.c1)}</td>
-      <td class="td-num">${pct(sf.c5)}</td>
-      <td class="td-num">${pct(sf.c1m)}</td>
-    </tr>
-    <tr class="sparkline-row" id="spark-${i}">
-      <td colspan="7">
-        <div style="display:flex;align-items:center;gap:16px;padding:4px 0">
-          <span style="font-size:11px;color:var(--text3);white-space:nowrap">12週 RS 曲線</span>
-          ${makeSvgSparkline(sf.weeks, 320, 48)}
-          <div style="font-family:var(--font-num);font-size:11px;color:var(--text3)">
-            ${sf.weeks.map((v,wi)=>`<span style="color:${v===Math.max(...sf.weeks)?'var(--pos)':v===Math.min(...sf.weeks)?'var(--neg)':'var(--text3)'}">${v}</span>`).join(' · ')}
-          </div>
-        </div>
-      </td>
-    </tr>`;
-  }).join('');
-
-  tbody.querySelectorAll('.sector-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const idx = row.dataset.idx;
-      document.getElementById(`spark-${idx}`).classList.toggle('open');
-    });
-  });
-}
-
-// ── EVENTS ────────────────────────────────────────────────────
-function bindEvents() {
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    });
-  });
-
-  document.getElementById('cap-filter').querySelectorAll('.pill').forEach(pill => {
-    pill.addEventListener('click', () => {
-      document.getElementById('cap-filter').querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
-      pill.classList.add('active');
-      filterCap = pill.dataset.cap;
-      page = 1; renderTable();
-    });
-  });
-
-  document.getElementById('sector-filter').addEventListener('change', e => {
-    filterSector = e.target.value; page = 1; renderTable();
-  });
-
-  document.getElementById('rs-filter').querySelectorAll('.pill').forEach(pill => {
-    pill.addEventListener('click', () => {
-      document.getElementById('rs-filter').querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
-      pill.classList.add('active');
-      filterRS = parseInt(pill.dataset.rs); page = 1; renderTable();
-    });
-  });
-
-  document.querySelectorAll('thead th[data-col]').forEach(th => {
-    th.addEventListener('click', () => {
-      const col = th.dataset.col;
-      if (sortCol === col) sortDir *= -1;
-      else { sortCol = col; sortDir = -1; }
-      document.querySelectorAll('thead th').forEach(h => {
-        h.classList.remove('sorted');
-        const icon = h.querySelector('.sort-icon');
-        if (icon) icon.textContent = '↕';
-      });
-      th.classList.add('sorted');
-      const icon = th.querySelector('.sort-icon');
-      if (icon) icon.textContent = sortDir === -1 ? '↓' : '↑';
-      page = 1; renderTable();
-    });
-  });
-}
-
-// ── EXPORT ────────────────────────────────────────────────────
-const SECTOR_EMOJI = {
-  '半導體':'⚙️ ','電腦/週邊':'🖥️ ','光電':'💡','通信網路':'🌐','電子零組件':'🔧',
-  '電子通路':'🛒','資訊服務':'💻','其他電子':'📱','化學':'🧪','生技醫療':'🏥',
-  '鋼鐵':'🔩','橡膠':'⭕','玻璃陶瓷':'🔮','造紙':'📄','食品':'🍎','紡織纖維':'🧵',
-  '電機機械':'⚙️ ','電器電纜':'🔌','汽車':'🚗','建材營造':'🏗️ ','航運':'🚢',
-  '觀光餐旅':'🏨','金融保險':'🏦','貿易百貨':'🏪','油電燃氣':'⛽','綠能環保':'🌱',
-  '數位雲端':'☁️ ','運動休閒':'🏃','居家生活':'🏠','文化創意':'🎨','其他':'📦',
+const SEPA_LABELS = {
+  rs70: "RS≥70",
+  above_150ma: "站上150MA",
+  above_200ma: "站上200MA",
+  ma200_up: "200MA上揚",
+  ma150_gt_200: "150MA>200MA",
+  near_52w_high: "接近52週高點",
 };
 
+const CAP_LABELS = {
+  L: "大型",
+  M: "中型",
+  S: "小型",
+};
 
-function exportTV() {
-  const threshold = parseInt(document.getElementById('rs-threshold').value) || 90;
-  const list = stocks.filter(s => s.rs >= threshold).sort((a, b) => b.rs - a.rs);
-  if (!list.length) { alert(`目前沒有 RS≥${threshold} 的股票`); return; }
-  const today = new Date().toISOString().slice(0, 10);
+const DEMO_DATA = {
+  schema_version: 2,
+  updated_at: "Demo",
+  total: 10,
+  formula: "RS raw = Q1*50% + Q2*25% + Q3*15% + Q4*10%; RS = market percentile",
+  sources: { prices: "demo" },
+  summary: {
+    rs90: 2,
+    rs70: 7,
+    sepa: 4,
+    rs_line_high: 3,
+    by_market: {
+      tw: { name: "台股", total: 5, rs90: 1, rs70: 4, sepa: 2, rs_line_high: 1 },
+      us: { name: "美股", total: 5, rs90: 1, rs70: 3, sepa: 2, rs_line_high: 2 },
+    },
+  },
+  stocks: [
+    demoStock("tw", "2330", "台積電", "半導體", "L", 96, 94, 1780, 31.4, 18.2, 12.1, 6.3, 1.2, 4.5, 14.8, true, true),
+    demoStock("us", "NVDA", "NVIDIA Corporation", "Technology", "L", 98, 99, 142.7, 42.1, 28.3, 14.9, 8.2, 2.4, 6.8, 21.2, true, true),
+    demoStock("tw", "2454", "聯發科", "半導體", "L", 88, 82, 1515, 18.2, 11.4, 9.3, 4.8, -0.8, 2.6, 9.4, false, true),
+    demoStock("us", "AVGO", "Broadcom Inc.", "Technology", "L", 91, 92, 1765.1, 24.3, 19.7, 10.1, 7.6, 1.8, 5.1, 16.7, true, true),
+    demoStock("tw", "2308", "台達電", "電子零組件", "L", 82, 74, 402, 15.6, 8.4, 6.5, 3.7, 0.6, 1.8, 7.2, false, false),
+    demoStock("us", "MSFT", "Microsoft Corporation", "Technology", "L", 86, 84, 468.5, 16.9, 10.8, 7.4, 4.4, 0.4, 1.9, 8.1, false, true),
+    demoStock("tw", "2317", "鴻海", "其他電子", "L", 76, 67, 216, 11.1, 6.7, 5.2, 2.1, -0.5, 0.9, 5.3, false, false),
+    demoStock("us", "AAPL", "Apple Inc.", "Technology", "L", 72, 65, 203.9, 8.4, 5.1, 3.3, 1.9, -0.3, 1.1, 4.7, false, false),
+    demoStock("tw", "5871", "中租-KY", "金融保險", "M", 64, 55, 156, 4.8, 2.2, -1.4, 0.8, 0.1, -0.4, 1.7, false, false),
+    demoStock("us", "XOM", "Exxon Mobil Corporation", "Energy", "L", 61, 52, 111.2, 3.7, 4.8, 2.6, -0.7, 0.2, 1.4, 2.3, false, false),
+  ],
+  sectors: [
+    demoSector("tw", "半導體", 2, 92, 1, 2, 0.2, 3.5, 12.1),
+    demoSector("us", "Technology", 4, 87, 2, 4, 1.1, 3.7, 12.7),
+    demoSector("tw", "電子零組件", 1, 82, 0, 1, 0.6, 1.8, 7.2),
+    demoSector("us", "Energy", 1, 61, 0, 0, 0.2, 1.4, 2.3),
+    demoSector("tw", "金融保險", 1, 64, 0, 0, 0.1, -0.4, 1.7),
+    demoSector("tw", "其他電子", 1, 76, 0, 1, -0.5, 0.9, 5.3),
+  ],
+};
 
-  const bySector = {};
-  list.forEach(s => {
-    const sec = s.sector || '其他';
-    if (!bySector[sec]) bySector[sec] = [];
-    bySector[sec].push(s);
+function demoStock(market, code, name, sector, cap, rs, rsGlobal, price, q1, q2, q3, q4, c1, c5, c1m, rsHigh, sepa) {
+  const exchange = market === "tw" ? "TWSE" : "NASDAQ";
+  const tvSymbol = market === "tw" ? `TWSE:${code}` : `${exchange}:${code}`;
+  return {
+    market,
+    market_name: market === "tw" ? "台股" : "美股",
+    code,
+    name,
+    sector,
+    industry: sector,
+    cap,
+    market_cap: 0,
+    currency: market === "tw" ? "TWD" : "USD",
+    exchange,
+    yf_symbol: market === "tw" ? `${code}.TW` : code,
+    tv_symbol: tvSymbol,
+    rs,
+    rs_global: rsGlobal,
+    rs_raw: q1 * 0.5 + q2 * 0.25 + q3 * 0.15 + q4 * 0.1,
+    q1,
+    q2,
+    q3,
+    q4,
+    c1,
+    c5,
+    c1m,
+    price,
+    rsHigh,
+    sepa,
+    sepa_detail: {
+      rs70: rs >= 70,
+      above_150ma: sepa,
+      above_200ma: sepa,
+      ma200_up: sepa,
+      ma150_gt_200: sepa,
+      near_52w_high: rs >= 70,
+    },
+  };
+}
+
+function demoSector(market, name, count, avgRs, rs90, rs70, c1, c5, c1m) {
+  return {
+    market,
+    market_name: market === "tw" ? "台股" : "美股",
+    name,
+    label: `${market === "tw" ? "台股" : "美股"} / ${name}`,
+    count,
+    avg_rs: avgRs,
+    median_rs: avgRs,
+    rs90_count: rs90,
+    rs70_count: rs70,
+    avg_c1: c1,
+    avg_c5: c5,
+    avg_c1m: c1m,
+  };
+}
+
+async function loadData() {
+  try {
+    const [dataRes, historyRes] = await Promise.all([
+      fetch(`rs_data.json?t=${Date.now()}`),
+      fetch(`rs_history.json?t=${Date.now()}`).catch(() => ({ ok: false })),
+    ]);
+    if (!dataRes.ok) throw new Error(`HTTP ${dataRes.status}`);
+    const data = await dataRes.json();
+    stocks = (data.stocks || []).map(normalizeStock);
+    sectors = (data.sectors || []).map(normalizeSector);
+    historyData = historyRes.ok ? await historyRes.json() : {};
+    hydrateSummary(data);
+    document.getElementById("schema-note").textContent = `schema v${data.schema_version || 1}`;
+  } catch (error) {
+    console.warn("Failed to load generated JSON, using demo data:", error);
+    stocks = DEMO_DATA.stocks.map(normalizeStock);
+    sectors = DEMO_DATA.sectors.map(normalizeSector);
+    historyData = {};
+    hydrateSummary(DEMO_DATA, true);
+    document.getElementById("schema-note").textContent = "demo data";
+  }
+}
+
+function normalizeStock(stock) {
+  return {
+    market: stock.market || "tw",
+    market_name: stock.market_name || (stock.market === "us" ? "美股" : "台股"),
+    code: String(stock.code || ""),
+    name: String(stock.name || ""),
+    sector: stock.sector || "Other",
+    industry: stock.industry || "",
+    cap: stock.cap || "S",
+    market_cap: Number(stock.market_cap || 0),
+    currency: stock.currency || (stock.market === "us" ? "USD" : "TWD"),
+    exchange: stock.exchange || "",
+    yf_symbol: stock.yf_symbol || stock.code,
+    tv_symbol: stock.tv_symbol || stock.code,
+    rs: Number(stock.rs || 0),
+    rs_global: Number(stock.rs_global || stock.rs || 0),
+    rs_raw: Number(stock.rs_raw || 0),
+    q1: Number(stock.q1 || 0),
+    q2: Number(stock.q2 || 0),
+    q3: Number(stock.q3 || 0),
+    q4: Number(stock.q4 || 0),
+    c1: Number(stock.c1 || 0),
+    c5: Number(stock.c5 || 0),
+    c1m: Number(stock.c1m || 0),
+    price: Number(stock.price || 0),
+    rsHigh: Boolean(stock.rsHigh),
+    sepa: Boolean(stock.sepa),
+    sepa_detail: stock.sepa_detail || {},
+  };
+}
+
+function normalizeSector(sector) {
+  return {
+    market: sector.market || "tw",
+    market_name: sector.market_name || (sector.market === "us" ? "美股" : "台股"),
+    name: sector.name || "Other",
+    label: sector.label || `${sector.market_name || ""} / ${sector.name || "Other"}`,
+    count: Number(sector.count || 0),
+    avg_rs: Number(sector.avg_rs || 0),
+    median_rs: Number(sector.median_rs || 0),
+    rs90_count: Number(sector.rs90_count || 0),
+    rs70_count: Number(sector.rs70_count || 0),
+    avg_c1: Number(sector.avg_c1 || 0),
+    avg_c5: Number(sector.avg_c5 || 0),
+    avg_c1m: Number(sector.avg_c1m || 0),
+  };
+}
+
+function hydrateSummary(data, demo = false) {
+  const summary = data.summary || {};
+  const byMarket = summary.by_market || {};
+  document.getElementById("update-time").textContent = demo ? "Demo data" : `${data.updated_at || "--"} Asia/Taipei`;
+  document.getElementById("cnt-total").textContent = formatInteger(data.total || stocks.length);
+  document.getElementById("cnt-rs70").textContent = formatInteger(summary.rs70 || 0);
+  document.getElementById("cnt-sepa").textContent = formatInteger(summary.sepa || 0);
+  document.getElementById("cnt-high").textContent = formatInteger(summary.rs_line_high || 0);
+  const twTotal = byMarket.tw?.total ?? stocks.filter((s) => s.market === "tw").length;
+  const usTotal = byMarket.us?.total ?? stocks.filter((s) => s.market === "us").length;
+  document.getElementById("cnt-by-market").textContent = `台股 ${formatInteger(twTotal)} · 美股 ${formatInteger(usTotal)}`;
+}
+
+function populateSectorSelect() {
+  const select = document.getElementById("sector-filter");
+  const current = select.value;
+  const options = new Map();
+  stocks.forEach((stock) => {
+    const key = `${stock.market}|${stock.sector}`;
+    options.set(key, `${stock.market_name} / ${stock.sector}`);
+  });
+  select.innerHTML = '<option value="all">全部板塊</option>';
+  [...options.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], "zh-Hant"))
+    .forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    });
+  select.value = options.has(current) ? current : "all";
+  sectorFilter = select.value;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatInteger(value) {
+  return Number(value || 0).toLocaleString("en-US");
+}
+
+function formatPct(value) {
+  const numeric = Number(value || 0);
+  const sign = numeric > 0 ? "+" : "";
+  const cls = numeric > 0 ? "pos" : numeric < 0 ? "neg" : "muted";
+  return `<span class="${cls}">${sign}${numeric.toFixed(1)}%</span>`;
+}
+
+function formatPrice(stock) {
+  if (!stock.price) return "--";
+  const digits = stock.price >= 1000 ? 0 : 2;
+  const price = stock.price.toLocaleString("en-US", {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  return stock.currency === "USD" ? `$${price}` : price;
+}
+
+function formatMarketCap(stock) {
+  if (!stock.market_cap) return CAP_LABELS[stock.cap] || stock.cap;
+  if (stock.market === "us") {
+    if (stock.market_cap >= 1e12) return `$${(stock.market_cap / 1e12).toFixed(2)}T`;
+    if (stock.market_cap >= 1e9) return `$${(stock.market_cap / 1e9).toFixed(1)}B`;
+    return `$${(stock.market_cap / 1e6).toFixed(0)}M`;
+  }
+  if (stock.market_cap >= 1e12) return `${(stock.market_cap / 1e12).toFixed(2)}兆`;
+  return `${(stock.market_cap / 1e8).toFixed(0)}億`;
+}
+
+function marketBadge(market) {
+  const label = market === "us" ? "美股" : "台股";
+  return `<span class="market-badge ${market}">${label}</span>`;
+}
+
+function capBadge(stock) {
+  const cap = stock.cap || "S";
+  return `<span class="cap-badge cap-${cap}" title="${escapeHtml(formatMarketCap(stock))}">${CAP_LABELS[cap] || cap}</span>`;
+}
+
+function rsColor(rs) {
+  if (rs >= 90) return "rs-hot";
+  if (rs >= 80) return "rs-strong";
+  if (rs >= 70) return "rs-watch";
+  if (rs >= 50) return "rs-mid";
+  return "rs-weak";
+}
+
+function rsCell(rs) {
+  const safe = Math.max(0, Math.min(99, Number(rs || 0)));
+  return `<div class="rs-cell">
+    <div class="rs-track"><div class="rs-fill ${rsColor(safe)}" style="width:${safe}%"></div></div>
+    <span class="${rsColor(safe)}">${safe}</span>
+  </div>`;
+}
+
+function tvUrl(stock) {
+  return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(stock.tv_symbol || stock.code)}`;
+}
+
+function stockHistoryKey(stock) {
+  return `${stock.market}:${stock.code}`;
+}
+
+function getHistoryEntries(stock) {
+  return historyData[stockHistoryKey(stock)] || [];
+}
+
+function hasUsableHistory(stock) {
+  return getHistoryEntries(stock).length >= 2;
+}
+
+function getFilteredStocks() {
+  const query = searchQuery.trim().toLowerCase();
+  const filtered = stocks.filter((stock) => {
+    if (marketFilter !== "all" && stock.market !== marketFilter) return false;
+    if (capFilter !== "all" && stock.cap !== capFilter) return false;
+    if (stock.rs < rsFilter) return false;
+    if (sectorFilter !== "all" && `${stock.market}|${stock.sector}` !== sectorFilter) return false;
+    if (query) {
+      const haystack = `${stock.code} ${stock.name} ${stock.sector} ${stock.industry} ${stock.exchange}`.toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
   });
 
-  const content = Object.entries(bySector)
-    .sort((a, b) => b[1][0].rs - a[1][0].rs)
-    .map(([sec, items]) => {
-      const emoji = SECTOR_EMOJI[sec] || '📌';
-      return `###${emoji} ${sec}\n${items.map(s => `TWSE:${s.code}`).join('\n')}`;
-    }).join('\n\n');
+  return filtered.sort((a, b) => compareValues(a, b, sortCol) * sortDir);
+}
 
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+function compareValues(a, b, col) {
+  const av = a[col];
+  const bv = b[col];
+  if (typeof av === "boolean" || typeof bv === "boolean") {
+    return Number(av) - Number(bv);
+  }
+  if (typeof av === "number" || typeof bv === "number") {
+    return Number(av || 0) - Number(bv || 0);
+  }
+  return String(av || "").localeCompare(String(bv || ""), "zh-Hant");
+}
+
+function renderRanking() {
+  const data = getFilteredStocks();
+  const totalPages = Math.max(1, Math.ceil(data.length / PER_PAGE));
+  if (page > totalPages) page = totalPages;
+  const start = (page - 1) * PER_PAGE;
+  const rows = data.slice(start, start + PER_PAGE);
+
+  document.getElementById("result-count").textContent = `${formatInteger(data.length)} 檔`;
+  document.getElementById("ranking-body").innerHTML = rows
+    .map((stock, idx) => {
+      const rank = start + idx + 1;
+      const lineTag = stock.rsHigh ? '<span class="line-tag">52W High</span>' : '<span class="dash">--</span>';
+      const sepaTag = stock.sepa ? '<span class="sepa-mini">SEPA</span>' : "";
+      const historyReady = hasUsableHistory(stock);
+      return `<tr class="${historyReady ? "clickable-row" : "history-disabled-row"}" data-key="${escapeHtml(stockHistoryKey(stock))}" title="${historyReady ? "查看 RS 歷史" : "歷史資料累積中"}">
+        <td class="right rank">${rank}</td>
+        <td>${marketBadge(stock.market)}</td>
+        <td class="symbol"><a href="${tvUrl(stock)}" target="_blank" rel="noopener">${escapeHtml(stock.code)}</a></td>
+        <td class="name-cell">${escapeHtml(stock.name)} ${sepaTag}</td>
+        <td>${rsCell(stock.rs)}</td>
+        <td class="mono">${stock.rs_global}</td>
+        <td>${lineTag}</td>
+        <td class="right mono">${formatPrice(stock)}</td>
+        <td class="right mono">${formatPct(stock.q1)}</td>
+        <td class="right mono">${formatPct(stock.q2)}</td>
+        <td class="right mono">${formatPct(stock.q3)}</td>
+        <td class="right mono">${formatPct(stock.q4)}</td>
+        <td class="right mono">${formatPct(stock.c1)}</td>
+        <td class="right mono">${formatPct(stock.c5)}</td>
+        <td class="right mono">${formatPct(stock.c1m)}</td>
+        <td>${capBadge(stock)}</td>
+        <td class="sector">${escapeHtml(stock.sector)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  document.querySelectorAll("#ranking-body tr").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("a")) return;
+      const stock = stocks.find((item) => stockHistoryKey(item) === row.dataset.key);
+      if (stock && hasUsableHistory(stock)) openHistory(stock);
+    });
+  });
+
+  renderPagination(totalPages);
+}
+
+function renderPagination(totalPages) {
+  const container = document.getElementById("pagination");
+  container.innerHTML = "";
+  const add = (label, target, disabled = false, active = false) => {
+    const button = document.createElement("button");
+    button.className = `page-btn${active ? " active" : ""}`;
+    button.textContent = label;
+    button.disabled = disabled;
+    button.addEventListener("click", () => {
+      page = target;
+      renderRanking();
+    });
+    container.appendChild(button);
+  };
+  add("<<", 1, page === 1);
+  add("<", Math.max(1, page - 1), page === 1);
+  const first = Math.max(1, page - 2);
+  const last = Math.min(totalPages, page + 2);
+  for (let p = first; p <= last; p += 1) add(String(p), p, false, p === page);
+  add(">", Math.min(totalPages, page + 1), page === totalPages);
+  add(">>", totalPages, page === totalPages);
+}
+
+function renderSepa() {
+  const rows = getFilteredStocks().filter((stock) => stock.sepa);
+  document.getElementById("sepa-count").textContent = `${formatInteger(rows.length)} 檔`;
+  document.getElementById("sepa-body").innerHTML = rows
+    .map((stock, idx) => {
+      const checks = Object.entries(SEPA_LABELS)
+        .map(([key, label]) => {
+          const pass = Boolean(stock.sepa_detail?.[key]);
+          return `<span class="check ${pass ? "pass" : "fail"}">${pass ? "✓" : "×"} ${label}</span>`;
+        })
+        .join("");
+      return `<tr>
+        <td class="right rank">${idx + 1}</td>
+        <td>${marketBadge(stock.market)}</td>
+        <td class="symbol"><a href="${tvUrl(stock)}" target="_blank" rel="noopener">${escapeHtml(stock.code)}</a></td>
+        <td class="name-cell">${escapeHtml(stock.name)}</td>
+        <td>${rsCell(stock.rs)}</td>
+        <td class="mono">${stock.rs_global}</td>
+        <td class="right mono">${formatPct(stock.q1)}</td>
+        <td class="right mono">${formatPct(stock.c1m)}</td>
+        <td class="checks">${checks}</td>
+        <td class="sector">${escapeHtml(stock.sector)}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+function renderSectors() {
+  const rows = sectors
+    .filter((sector) => marketFilter === "all" || sector.market === marketFilter)
+    .sort((a, b) => b.avg_rs - a.avg_rs);
+  document.getElementById("sector-count").textContent = `${formatInteger(rows.length)} 個板塊`;
+  document.getElementById("sector-body").innerHTML = rows
+    .map((sector, idx) => `<tr>
+      <td class="right rank">${idx + 1}</td>
+      <td>${marketBadge(sector.market)}</td>
+      <td class="name-cell">${escapeHtml(sector.name)}</td>
+      <td class="right mono">${formatInteger(sector.count)}</td>
+      <td>${rsCell(Math.round(sector.avg_rs))}</td>
+      <td class="right mono">${formatInteger(sector.rs90_count)}</td>
+      <td class="right mono">${formatInteger(sector.rs70_count)}</td>
+      <td class="right mono">${formatPct(sector.avg_c1)}</td>
+      <td class="right mono">${formatPct(sector.avg_c5)}</td>
+      <td class="right mono">${formatPct(sector.avg_c1m)}</td>
+    </tr>`)
+    .join("");
+}
+
+function renderAll() {
+  renderRanking();
+  renderSepa();
+  renderSectors();
+}
+
+function bindEvents() {
+  document.querySelectorAll(".nav-link").forEach((button) => {
+    button.addEventListener("click", () => {
+      activeTab = button.dataset.tab;
+      document.querySelectorAll(".nav-link").forEach((btn) => btn.classList.toggle("active", btn === button));
+      document.querySelectorAll(".tab-panel").forEach((panel) => {
+        panel.classList.toggle("active", panel.id === `tab-${activeTab}`);
+      });
+    });
+  });
+
+  bindSegmented("market-filter", "market", (value) => {
+    marketFilter = value;
+    page = 1;
+    renderAll();
+  });
+  bindSegmented("cap-filter", "cap", (value) => {
+    capFilter = value;
+    page = 1;
+    renderAll();
+  });
+  bindSegmented("rs-filter", "rs", (value) => {
+    rsFilter = Number(value || 0);
+    page = 1;
+    renderAll();
+  });
+
+  document.getElementById("sector-filter").addEventListener("change", (event) => {
+    sectorFilter = event.target.value;
+    page = 1;
+    renderAll();
+  });
+
+  document.getElementById("search-input").addEventListener("input", (event) => {
+    searchQuery = event.target.value;
+    page = 1;
+    renderAll();
+  });
+
+  document.querySelectorAll("th[data-col]").forEach((th) => {
+    th.addEventListener("click", () => {
+      const col = th.dataset.col;
+      if (sortCol === col) {
+        sortDir *= -1;
+      } else {
+        sortCol = col;
+        sortDir = ["name", "code", "market", "sector", "cap"].includes(col) ? 1 : -1;
+      }
+      document.querySelectorAll("th[data-col]").forEach((item) => item.classList.remove("sorted"));
+      th.classList.add("sorted");
+      page = 1;
+      renderRanking();
+    });
+  });
+
+  document.getElementById("export-btn").addEventListener("click", exportWatchlist);
+  document.getElementById("modal-close").addEventListener("click", closeHistory);
+  document.getElementById("history-modal").addEventListener("click", (event) => {
+    if (event.target.id === "history-modal") closeHistory();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeHistory();
+  });
+}
+
+function bindSegmented(id, dataAttr, callback) {
+  const root = document.getElementById(id);
+  root.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => {
+      root.querySelectorAll("button").forEach((btn) => btn.classList.remove("active"));
+      button.classList.add("active");
+      callback(button.dataset[dataAttr]);
+    });
+  });
+}
+
+function exportWatchlist() {
+  const list = getFilteredStocks().filter((stock) => stock.rs >= Math.max(rsFilter, 70));
+  if (!list.length) {
+    alert("目前篩選條件下沒有可匯出的 RS≥70 股票。");
+    return;
+  }
+  const grouped = new Map();
+  list.forEach((stock) => {
+    const key = `${stock.market_name} / ${stock.sector}`;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(stock);
+  });
+
+  const content = [...grouped.entries()]
+    .map(([group, items]) => {
+      const lines = items
+        .sort((a, b) => b.rs - a.rs)
+        .map((stock) => `${stock.tv_symbol || stock.code} # ${stock.market_name} ${stock.code} ${stock.name} RS ${stock.rs}`)
+        .join("\n");
+      return `### ${group}\n${lines}`;
+    })
+    .join("\n\n");
+
+  const date = new Date().toISOString().slice(0, 10);
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `rs${threshold}_watchlist_${today}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `tw_us_rs_watchlist_${date}.txt`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
   URL.revokeObjectURL(url);
 }
 
-// ── HISTORY MODAL ─────────────────────────────────────────────
-function showHistory(code, name) {
-  const entries = rsHistory[code] || [];
-  document.getElementById('modal-title').textContent = `${code} ${name} — RS 歷史走勢`;
-  document.getElementById('modal-sub').textContent = entries.length ? `近 ${entries.length} 個交易日` : '';
-  const noData = document.getElementById('modal-no-data');
-  const canvas = document.getElementById('history-chart');
+function openHistory(stock) {
+  const key = stockHistoryKey(stock);
+  const entries = historyData[key] || [];
+  if (entries.length < 2) return;
+  const modal = document.getElementById("history-modal");
+  const canvas = document.getElementById("history-chart");
+  const empty = document.getElementById("history-empty");
 
-  if (entries.length < 2) {
-    canvas.style.display = 'none';
-    noData.style.display = 'block';
-    noData.textContent = entries.length === 0
-      ? '尚無歷史資料（明日計算後開始累積）'
-      : `資料累積中（目前 ${entries.length} 筆，需至少 2 個交易日）`;
+  document.getElementById("modal-title").textContent = `${stock.market_name} ${stock.code} ${stock.name}`;
+  document.getElementById("modal-subtitle").textContent = entries.length
+    ? `近 ${entries.length} 筆市場內 RS 紀錄`
+    : "第一次跑完每日更新後會開始累積歷史。";
+
+  if (historyChart) {
+    historyChart.destroy();
+    historyChart = null;
+  }
+
+  if (entries.length < 2 || typeof Chart === "undefined") {
+    canvas.style.display = "none";
+    empty.style.display = "grid";
   } else {
-    canvas.style.display = 'block';
-    noData.style.display = 'none';
-    if (historyChart) historyChart.destroy();
+    canvas.style.display = "block";
+    empty.style.display = "none";
     historyChart = new Chart(canvas, {
-      type: 'line',
+      type: "line",
       data: {
-        labels: entries.map(e => e.date.slice(5)),
-        datasets: [{
-          data: entries.map(e => e.rs),
-          borderColor: '#06b6d4',
-          backgroundColor: 'rgba(6,182,212,.08)',
-          borderWidth: 2,
-          pointRadius: entries.length > 60 ? 0 : 3,
-          pointBackgroundColor: '#06b6d4',
-          fill: true,
-          tension: 0.3,
-        }]
+        labels: entries.map((item) => item.date.slice(5)),
+        datasets: [
+          {
+            label: "RS",
+            data: entries.map((item) => item.rs),
+            borderColor: "#2dd4bf",
+            backgroundColor: "rgba(45, 212, 191, .12)",
+            borderWidth: 2,
+            pointRadius: entries.length > 80 ? 0 : 2,
+            fill: true,
+            tension: 0.25,
+          },
+        ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => ` RS ${ctx.parsed.y}` } } },
+        plugins: { legend: { display: false } },
         scales: {
-          x: { ticks: { color: '#4a5d7a', maxTicksLimit: 10 }, grid: { color: '#1f2d45' } },
-          y: { min: 0, max: 99, ticks: { color: '#4a5d7a' }, grid: { color: '#1f2d45' } }
-        }
-      }
+          x: { ticks: { color: "#8f9aa7", maxTicksLimit: 10 }, grid: { color: "#24272f" } },
+          y: { min: 0, max: 99, ticks: { color: "#8f9aa7" }, grid: { color: "#24272f" } },
+        },
+      },
     });
   }
-  document.getElementById('history-modal').classList.add('open');
+
+  modal.classList.add("open");
 }
 
-function closeHistoryModal(e) {
-  if (e && e.target !== document.getElementById('history-modal')) return;
-  document.getElementById('history-modal').classList.remove('open');
-}
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHistoryModal(); });
-
-function onSearch() {
-  searchQuery = document.getElementById('search-input').value;
-  page = 1; renderTable();
+function closeHistory() {
+  document.getElementById("history-modal").classList.remove("open");
 }
 
-// ── VISITOR COUNTER ───────────────────────────────────────────
-(function fetchVisitors() {
-  const wrap = document.getElementById('nav-visitors');
-  // GoatCounter counter API: path is the page path tracked by goatcounter
-  // If site is at /rs-ranking/, use that path; root path uses //
-  const paths = ['//Taiwan-RS-ranking', '//'];
-  function tryPath(i) {
-    if (i >= paths.length) { if (wrap) wrap.style.display = 'none'; return; }
-    fetch(`https://martin.goatcounter.com/counter/${paths[i]}.json`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        const el = document.getElementById('visitor-count');
-        if (!el) return;
-        if (!d || !d.count) { tryPath(i + 1); return; }
-        const n = parseInt(d.count.replace(/,/g, ''), 10);
-        el.textContent = n.toLocaleString() + ' 次瀏覽';
-      })
-      .catch(() => tryPath(i + 1));
-  }
-  tryPath(0);
-})();
+async function init() {
+  await loadData();
+  populateSectorSelect();
+  bindEvents();
+  renderAll();
+}
 
 init();
