@@ -531,6 +531,28 @@ def extract_close_from_download(df: pd.DataFrame, symbol: str, chunk_len: int) -
         return None
 
 
+def download_single_price(symbol: str, period: str) -> pd.Series | None:
+    for attempt in range(1, 4):
+        try:
+            df = yf.download(
+                tickers=symbol,
+                period=period,
+                auto_adjust=True,
+                progress=False,
+                group_by="ticker",
+                threads=False,
+                timeout=30,
+            )
+            close = extract_close_from_download(df, symbol, 1)
+            if close is not None:
+                return close
+        except Exception as exc:
+            if attempt == 3:
+                print(f"  Single download failed for {symbol}: {exc}")
+        time.sleep(attempt * 1.5)
+    return None
+
+
 def download_prices(symbols: list[str], period: str, chunk_size: int) -> dict[str, pd.Series]:
     prices: dict[str, pd.Series] = {}
     total_chunks = math.ceil(len(symbols) / chunk_size)
@@ -562,13 +584,24 @@ def download_prices(symbols: list[str], period: str, chunk_size: int) -> dict[st
             if close is not None:
                 prices[symbol] = close
 
+    missing = [symbol for symbol in symbols if symbol not in prices]
+    if missing:
+        retry_cap = len(missing) if len(symbols) <= 10 else min(len(missing), 250)
+        print(f"Retrying {retry_cap}/{len(missing)} missing symbols individually...")
+        for idx, symbol in enumerate(missing[:retry_cap], start=1):
+            close = download_single_price(symbol, period)
+            if close is not None:
+                prices[symbol] = close
+            if idx % 50 == 0 or idx == retry_cap:
+                print(f"  single retry {idx}/{retry_cap}")
+
     print(f"Downloaded usable price series: {len(prices)}/{len(symbols)}")
     return prices
 
 
 def download_benchmarks(markets: list[str], period: str) -> dict[str, pd.Series]:
     symbols = [BENCHMARKS[m] for m in markets]
-    raw = download_prices(symbols, period=period, chunk_size=max(1, len(symbols)))
+    raw = download_prices(symbols, period=period, chunk_size=1)
     benchmarks: dict[str, pd.Series] = {}
     for market in markets:
         symbol = BENCHMARKS[market]
