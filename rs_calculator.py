@@ -54,6 +54,11 @@ BENCHMARKS = {
     "us": "^GSPC",
 }
 
+BENCHMARK_ALTERNATES = {
+    "tw": ["^TWII", "0050.TW", "EWT"],
+    "us": ["^GSPC", "SPY", "VOO"],
+}
+
 MARKET_NAMES = {
     "tw": "台股",
     "us": "美股",
@@ -553,6 +558,38 @@ def download_single_price(symbol: str, period: str) -> pd.Series | None:
     return None
 
 
+def build_synthetic_benchmark(
+    market: str,
+    universe: list[StockMeta],
+    prices: dict[str, pd.Series],
+    max_components: int = 300,
+) -> pd.Series | None:
+    components: list[pd.Series] = []
+    seen: set[str] = set()
+    for stock in universe:
+        if stock.market != market or stock.yf_symbol in seen:
+            continue
+        seen.add(stock.yf_symbol)
+        close = prices.get(stock.yf_symbol)
+        if close is None:
+            continue
+        close = close.dropna()
+        if len(close) < MIN_DAYS:
+            continue
+        base = close.iloc[0]
+        if not base or np.isnan(base):
+            continue
+        components.append((close / base).rename(stock.yf_symbol))
+        if len(components) >= max_components:
+            break
+
+    if not components:
+        return None
+
+    synthetic = pd.concat(components, axis=1).mean(axis=1).dropna()
+    return synthetic if len(synthetic) >= MIN_DAYS else None
+
+
 def download_prices(symbols: list[str], period: str, chunk_size: int) -> dict[str, pd.Series]:
     prices: dict[str, pd.Series] = {}
     total_chunks = math.ceil(len(symbols) / chunk_size)
@@ -599,17 +636,29 @@ def download_prices(symbols: list[str], period: str, chunk_size: int) -> dict[st
     return prices
 
 
-def download_benchmarks(markets: list[str], period: str) -> dict[str, pd.Series]:
-    symbols = [BENCHMARKS[m] for m in markets]
-    raw = download_prices(symbols, period=period, chunk_size=1)
+def download_benchmarks(
+    markets: list[str],
+    period: str,
+    universe: list[StockMeta],
+    prices: dict[str, pd.Series],
+) -> dict[str, pd.Series]:
     benchmarks: dict[str, pd.Series] = {}
     for market in markets:
-        symbol = BENCHMARKS[market]
-        series = raw.get(symbol)
+        series = None
+        for symbol in BENCHMARK_ALTERNATES.get(market, [BENCHMARKS[market]]):
+            print(f"Downloading benchmark {symbol}...")
+            series = download_single_price(symbol, period)
+            if series is not None:
+                print(f"Benchmark {symbol}: {len(series)} bars")
+                break
+            print(f"  Benchmark unavailable: {symbol}")
         if series is None:
-            raise SystemExit(f"Benchmark download failed: {symbol}")
+            print(f"Building synthetic benchmark for {MARKET_NAMES.get(market, market)} from downloaded prices...")
+            series = build_synthetic_benchmark(market, universe, prices)
+        if series is None:
+            raise SystemExit(f"Benchmark download failed: {BENCHMARKS[market]}")
         benchmarks[market] = series
-        print(f"Benchmark {symbol}: {len(series)} bars")
+        print(f"Benchmark ready for {MARKET_NAMES.get(market, market)}: {len(series)} bars")
     return benchmarks
 
 
@@ -1005,9 +1054,9 @@ def main() -> None:
     print("=" * 72)
 
     universe = fetch_universe(args)
-    benchmarks = download_benchmarks(markets, args.period)
     symbols = [stock.yf_symbol for stock in universe]
     prices = download_prices(symbols, period=args.period, chunk_size=args.chunk_size)
+    benchmarks = download_benchmarks(markets, args.period, universe, prices)
     results = process_results(universe, prices, benchmarks)
     sectors = build_sector_flow(results)
     write_output(results, sectors, now, args)
